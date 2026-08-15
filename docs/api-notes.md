@@ -2,6 +2,8 @@
 
 Vérification effectuée via `curl` en session Claude Code online, avant tout code. Objectif : confirmer les 3 endpoints du plan (BAN, ADEME DPE-Existant, BDNB), leurs paramètres de filtrage, et les champs exacts à mapper vers `dpe_search_query` / `dpe_candidate`.
 
+**User-Agent applicatif** : tous les appels (ADEME comme BDNB) doivent utiliser `dpe-search/0.1 (+contact: cyril@hugon.link)` — identifiable et contactable en cas de souci côté fournisseur, plutôt qu'un UA générique. Mis à jour dans tous les exemples ci-dessous.
+
 ---
 
 ## 1. BAN — Base Adresse Nationale
@@ -58,7 +60,7 @@ Réponse (200, GeoJSON) :
 
 ### ⚠️ Piège : `User-Agent` requis
 
-Sans en-tête `User-Agent`, l'API renvoie **403 Forbidden** (WAF nginx devant data-fair). Toujours envoyer un UA explicite, ex. `dpe-search/1.0`.
+Sans en-tête `User-Agent`, l'API renvoie **403 Forbidden** (WAF nginx devant data-fair). Toujours envoyer un UA explicite et identifiable : `dpe-search/0.1 (+contact: cyril@hugon.link)`.
 
 ### ⚠️ Piège découvert : le champ `code_postal_ban` est bloqué par le WAF dans `qs`
 
@@ -66,23 +68,53 @@ Le paramètre `qs` (syntaxe Lucene, ex. `champ:valeur AND champ2:valeur2`) est b
 
 Mais **toute requête `qs` contenant `code_postal_ban:<valeur>` renvoie systématiquement 403**, quelle que soit la valeur (`13001`, `13002`, `75001` testés → tous 403), alors que `etiquette_dpe:D`, `numero_dpe:123`, `code_insee_ban:13201` fonctionnent (200). Cause probable : règle WAF spécifique sur ce nom de champ (pas un problème de syntaxe ni de rate-limit — confirmé par répétition après délai).
 
-**Solution retenue : filtrer sur `code_postal_brut` (entier) à la place de `code_postal_ban`.** Fonctionne de façon identique pour notre cas d'usage (CP Marseille 13001–13016), testé et stable.
+### Champ de filtre retenu : `code_insee_ban` (pas `code_postal_brut`)
+
+Deux candidats de repli testés : `code_postal_brut` (CP tel que saisi par le diagnostiqueur) et `code_insee_ban` (code INSEE issu du géocodage BAN — même pipeline que `code_postal_ban`, juste pas bloqué par le WAF).
+
+**Check de contenance sur le CP 13005 (arrondissement Marseille 5e, code INSEE `13205`)** :
+
+| Filtre | Total |
+|---|---|
+| `code_postal_brut:13005` | 16 181 |
+| `code_insee_ban:13205` | 15 844 |
+
+Écart de ~2%, dans les deux sens. En creusant (`code_insee_ban:13205 AND NOT code_postal_brut:13005`, 199 lignes) :
 
 ```bash
-curl -A "dpe-search/1.0" -G "https://data.ademe.fr/data-fair/api/v1/datasets/dpe03existant/lines" \
-  --data-urlencode "qs=code_postal_brut:13001 AND etiquette_dpe:D AND etiquette_ges:D" \
+curl -A "dpe-search/0.1 (+contact: cyril@hugon.link)" -G "https://data.ademe.fr/data-fair/api/v1/datasets/dpe03existant/lines" \
+  --data-urlencode "qs=code_insee_ban:13205 AND NOT code_postal_brut:13005" \
+  --data-urlencode "size=5" \
+  --data-urlencode "select=numero_dpe,code_postal_brut,code_postal_ban,adresse_ban,identifiant_ban"
+```
+
+→ des adresses réellement au 13005 (`code_postal_ban: "13005"`, adresse BAN cohérente, ex. `"34 Rue madon 13005 Marseille"`) où le diagnostiqueur a saisi un `code_postal_brut` **voisin plausible mais faux** (`13004`, `13006`, `13001`) — confusion de bord d'arrondissement, pas une faute de frappe grossière type `13OO5`. Filtrer sur `code_postal_brut` aurait fait perdre ces ~200 candidats légitimes rien que sur cet arrondissement.
+
+**`code_insee_ban` est donc le filtre retenu** : il vient du même géocodage BAN fiable que `code_postal_ban`, n'est pas bloqué par le WAF, et correspond exactement au `code_commune_insee` qu'on doit de toute façon calculer pour interroger BDNB (`cpToInsee()` dans `/lib/marseille.ts`, voir plus bas) — un seul mapping CP→INSEE sert aux deux APIs.
+
+```bash
+curl -A "dpe-search/0.1 (+contact: cyril@hugon.link)" -G "https://data.ademe.fr/data-fair/api/v1/datasets/dpe03existant/lines" \
+  --data-urlencode "qs=code_insee_ban:13201 AND etiquette_dpe:D AND etiquette_ges:D" \
   --data-urlencode "size=20" \
   --data-urlencode "select=numero_dpe,etiquette_dpe,etiquette_ges,adresse_ban,identifiant_ban,conso_5_usages_par_m2_ep,emission_ges_5_usages_par_m2,date_etablissement_dpe,surface_habitable_logement,type_batiment,numero_etage_appartement,nombre_appartement,nombre_niveau_immeuble,_geopoint"
 ```
 
-→ 200, `total: 1516` pour CP 13001 / DPE D / GES D.
+→ 200, résultats cohérents pour CP/arrondissement 13001 (`code_insee_ban:13201`) / DPE D / GES D.
+
+### Stratégie de recherche : repli sur tout Marseille si 0 résultat sur l'arrondissement exact
+
+Confirmé par le test end-to-end (`scripts/e2e-test.ts`, voir aussi ce script pour le détail) : le CP affiché sur une annonce (zone de distribution postale) et le `code_insee_ban` (secteur électoral issu du géocodage BAN) peuvent diverger près d'une frontière d'arrondissement — cf. le check de contenance ci-dessus. Sur le cas réel testé (CP 13005, signature exacte), 0 résultat dans `code_insee_ban:13205` mais **1 résultat exact en élargissant aux 16 arrondissements de Marseille** (le bâtiment était en réalité `code_insee_ban:13204`).
+
+**Stratégie retenue pour `/lib/ademe.ts`** : chercher d'abord sur l'arrondissement déduit du CP saisi ; si 0 résultat après filtrage contexte, élargir automatiquement aux 16 CP Marseille (`(code_insee_ban:13201 OR ... OR code_insee_ban:13216)`) plutôt que de conclure à un échec — toujours dans le périmètre V0, pas de géocodage/bbox nécessaire, juste 16 clauses `OR` en plus.
+
+⚠️ Le paramètre `size` doit être généreux (`200` au moins) sur cette requête élargie : sur signature exacte + tout Marseille, on a observé 62 lignes, largement au-dessus du défaut de pagination si non précisé.
 
 ### Filtres numériques (plages conso/émission)
 
 Syntaxe range Lucene confirmée fonctionnelle :
 
 ```
-qs=code_postal_brut:13001 AND etiquette_dpe:D AND conso_5_usages_par_m2_ep:[160 TO 170]
+qs=code_insee_ban:13201 AND etiquette_dpe:D AND conso_5_usages_par_m2_ep:[160 TO 170]
 ```
 
 → 200, résultats cohérents.
@@ -95,7 +127,7 @@ qs=code_postal_brut:13001 AND etiquette_dpe:D AND conso_5_usages_par_m2_ep:[160 
 | Étiquette GES | `etiquette_ges` |
 | Conso EP (kWh/m²/an) | `conso_5_usages_par_m2_ep` |
 | Émission GES (kgCO2/m²/an) | `emission_ges_5_usages_par_m2` |
-| CP (filtre) | `code_postal_brut` (⚠️ pas `code_postal_ban`, voir ci-dessus) |
+| CP/arrondissement (filtre) | `code_insee_ban` (⚠️ pas `code_postal_ban`, bloqué par le WAF ; pas `code_postal_brut` non plus, saisie diagnostiqueur peu fiable — voir check de contenance ci-dessus) |
 | CP (affichage) | `code_postal_ban` (lisible directement dans les résultats, seul le *filtre* WAF pose problème) |
 | Adresse normalisée | `adresse_ban` |
 | Clé de jointure BAN/BDNB | `identifiant_ban` (format `13201_9601_00017`, identique à `cle_interop_adr_principale_ban` côté BDNB — **clé de jointure directe**) |
@@ -137,7 +169,7 @@ Style **PostgREST** (filtres `?champ=eq.valeur`, `select=champ1,champ2`, etc. �
 ### Table à utiliser : `batiment_groupe_complet`
 
 ```bash
-curl -A "dpe-search/1.0" \
+curl -A "dpe-search/0.1 (+contact: cyril@hugon.link)" \
   "https://api.bdnb.io/v1/bdnb/donnees/batiment_groupe_complet?code_commune_insee=eq.13201&select=batiment_groupe_id,libelle_adr_principale_ban,cle_interop_adr_principale_ban,hauteur_mean,annee_construction,nb_log,nb_niveau,classe_bilan_dpe&limit=3"
 ```
 
@@ -161,13 +193,13 @@ curl -A "dpe-search/1.0" \
 Filtrer uniquement par `cle_interop_adr_principale_ban=eq.<clé>` sur `batiment_groupe_complet` → **500 `statement timeout`** (colonne non indexée seule sur cette vue large). **Toujours combiner avec `code_commune_insee=eq.<insee>`** (indexé) en plus de la clé d'adresse — testé et rapide (< 1s) :
 
 ```bash
-curl -A "dpe-search/1.0" \
+curl -A "dpe-search/0.1 (+contact: cyril@hugon.link)" \
   "https://api.bdnb.io/v1/bdnb/donnees/batiment_groupe_complet?code_commune_insee=eq.13201&cle_interop_adr_principale_ban=eq.13201_9601_00017&select=batiment_groupe_id,libelle_adr_principale_ban,hauteur_mean,annee_construction,nb_log,classe_bilan_dpe"
 ```
 
 → 200, résultat unique retourné en < 1s.
 
-Le code INSEE Marseille se déduit du CP : arrondissement `13001` → `13201`, `13002` → `13202`, … `13016` → `13216` (à encoder dans `/lib/marseille.ts`).
+Le code INSEE Marseille se déduit du CP : arrondissement `13001` → `13201`, `13002` → `13202`, … `13016` → `13216` (16 mappings 1:1, à encoder en dur dans `/lib/marseille.ts`, fonction `cpToInsee(cp: string): string`). ⚠️ Le code commune global de Marseille (`13055`) ne fonctionne pas ici — BDNB (comme le champ `code_insee_ban` d'ADEME) raisonne au niveau **arrondissement** (secteurs électoraux, codes `13201`–`13216`), pas au niveau commune.
 
 ### Champs confirmés à mapper
 
@@ -175,7 +207,8 @@ Le code INSEE Marseille se déduit du CP : arrondissement `13001` → `13201`, `
 |---|---|
 | Hauteur moyenne bâtiment | `hauteur_mean` |
 | Année de construction | `annee_construction` |
-| Nb de logements | `nb_log` |
+| Nb de logements (estimation géométrique) | `nb_log` |
+| Nb de lots (registre copropriétés, plus fiable) | `nb_log_rnc` ⚠️ à préférer à `nb_log` pour le filtre "nb lots" — voir `scripts/e2e-test.ts` |
 | Nb de niveaux | `nb_niveau` |
 | DPE bâtiment (représentatif) | `classe_bilan_dpe` (peut être `null` si pas de DPE bâtiment agrégé) |
 | Adresse | `libelle_adr_principale_ban` |
@@ -198,16 +231,18 @@ Cette approche évite un géocodage BAN redondant (déjà fait par l'ADEME et la
 | Point du plan | Réalité vérifiée |
 |---|---|
 | Dataset ADEME "à confirmer" | Confirmé : slug `dpe03existant` |
-| Filtre direct `code_postal_ban` dans `qs` | **Bloqué par le WAF (403)** → utiliser `code_postal_brut` |
+| Filtre direct `code_postal_ban` dans `qs` | **Bloqué par le WAF (403)** → utiliser `code_insee_ban` (fiable, non filtré par WAF, réutilise le mapping CP→INSEE de `/lib/marseille.ts`) |
 | BDNB sur `bdnb.io`, "clé API possiblement requise" | API réelle sur `api.bdnb.io`, offre **Open gratuite sans clé**, 120 req/min |
 | Endpoint BDNB par adresse | Table `batiment_groupe_complet`, filtrer par `code_commune_insee` + `cle_interop_adr_principale_ban` (pas par adresse texte) |
 | Matching adresse ADEME ↔ BDNB par normalisation texte | Un identifiant commun existe (`identifiant_ban` / `cle_interop_adr_principale_ban`), pas besoin de matching flou pour la majorité des cas |
 
-## Point non vérifiable dans cette session
+## Collision de préfixe `dpe_*` dans Supabase Teriis
 
-**Collision de préfixe `dpe_*` dans Supabase Teriis** : aucune variable d'environnement Supabase n'est présente dans cet environnement Claude Code online (conforme au brief : pas de secrets stockés ici). Impossible d'interroger `information_schema.tables` à distance. **À vérifier manuellement côté utilisateur** avant de jouer la migration, par ex. dans le SQL Editor Supabase :
+Vérifié manuellement par l'utilisateur dans le SQL Editor Supabase (aucune credential Supabase n'étant disponible dans cet environnement Claude Code online) :
 
 ```sql
 select table_name from information_schema.tables
 where table_schema = 'public' and table_name like 'dpe_%';
 ```
+
+→ `Success. No rows returned`. RAS, la migration peut être jouée telle quelle.
