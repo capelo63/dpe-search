@@ -1,13 +1,11 @@
 import { z } from 'zod';
 import { cpToInsee, MARSEILLE_CODES_POSTAUX } from './marseille';
+import { etiquetteSchema, type Etiquette } from '@/types/dpe';
 
 // Voir docs/api-notes.md pour le détail des pièges (WAF, champ de filtre
 // retenu, taille de page) découverts pendant la vérification API.
 const ADEME_BASE = 'https://data.ademe.fr/data-fair/api/v1/datasets/dpe03existant/lines';
 const USER_AGENT = 'dpe-search/0.1 (+contact: cyril@hugon.link)';
-
-export const etiquetteSchema = z.enum(['A', 'B', 'C', 'D', 'E', 'F', 'G']);
-export type Etiquette = z.infer<typeof etiquetteSchema>;
 
 export const ademeSignatureSchema = z.object({
   etiquetteDpe: etiquetteSchema,

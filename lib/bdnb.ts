@@ -16,6 +16,7 @@ export type BdnbEnrichment = {
    *  subdivisés — validé sur cas réel, voir scripts/e2e-test.ts). */
   nbLots: number | null;
   nbNiveau: number | null;
+  surfaceEmpriseSol: number | null;
   dpeBatiment: string | null;
 };
 
@@ -27,6 +28,7 @@ type RawBdnbLine = {
   nb_log: number | null;
   nb_log_rnc: number | null;
   nb_niveau: number | null;
+  surface_emprise_sol: number | null;
   classe_bilan_dpe: string | null;
 };
 
@@ -40,6 +42,7 @@ function normalize(line: RawBdnbLine): BdnbEnrichment {
     nbLogRnc: line.nb_log_rnc,
     nbLots: line.nb_log_rnc ?? line.nb_log,
     nbNiveau: line.nb_niveau,
+    surfaceEmpriseSol: line.surface_emprise_sol,
     dpeBatiment: line.classe_bilan_dpe,
   };
 }
@@ -59,7 +62,7 @@ export async function enrichBuilding(
   url.searchParams.set('cle_interop_adr_principale_ban', `eq.${identifiantBan}`);
   url.searchParams.set(
     'select',
-    'batiment_groupe_id,libelle_adr_principale_ban,hauteur_mean,annee_construction,nb_log,nb_log_rnc,nb_niveau,classe_bilan_dpe'
+    'batiment_groupe_id,libelle_adr_principale_ban,hauteur_mean,annee_construction,nb_log,nb_log_rnc,nb_niveau,surface_emprise_sol,classe_bilan_dpe'
   );
 
   const res = await fetch(url, { headers: { 'User-Agent': USER_AGENT } });
@@ -73,21 +76,20 @@ export async function enrichBuilding(
 export type EnrichmentTarget = { codeInsee: string; identifiantBan: string | null };
 
 /**
- * Enrichit plusieurs candidats en série (offre Open : 120 req/min, pas de
- * clé — un batch séquentiel reste largement sous la limite pour une
- * shortlist typique). Retourne un enrichissement par candidat, même ordre,
- * `null` si pas d'identifiant_ban ou pas de bâtiment apparié dans BDNB.
+ * Enrichit plusieurs candidats en parallèle (Promise.all) : le budget
+ * round-trip de POST /api/queries est de 4s, une boucle séquentielle ne
+ * tiendrait pas dès qu'une signature élargie à tout Marseille remonte
+ * plusieurs dizaines de candidats. Offre Open : 120 req/min, pas de clé —
+ * une shortlist V0 typique (quelques dizaines de candidats) reste sous la
+ * limite même en rafale ; à revisiter (ex. p-limit) si une signature très
+ * fréquente + "tout Marseille" pousse ça plus haut.
+ * Retourne un enrichissement par candidat, même ordre, `null` si pas
+ * d'identifiant_ban ou pas de bâtiment apparié dans BDNB.
  */
 export async function enrichBuildings(
   targets: EnrichmentTarget[]
 ): Promise<(BdnbEnrichment | null)[]> {
-  const results: (BdnbEnrichment | null)[] = [];
-  for (const t of targets) {
-    if (!t.identifiantBan) {
-      results.push(null);
-      continue;
-    }
-    results.push(await enrichBuilding(t.codeInsee, t.identifiantBan));
-  }
-  return results;
+  return Promise.all(
+    targets.map((t) => (t.identifiantBan ? enrichBuilding(t.codeInsee, t.identifiantBan) : null))
+  );
 }
