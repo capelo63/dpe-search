@@ -5,11 +5,13 @@
 //   pas de Supabase). Sert de test de non-régression sur les wrappers API.
 //
 //   Phase 2 — flow applicatif réel : spawn un serveur `next dev` éphémère,
-//   POST /api/queries (mêmes fingerprint + contraintes), relit les candidats
-//   persistés dans Supabase, vérifie qu'on retrouve la même adresse. Sautée
-//   proprement si NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY ne
-//   sont pas dans l'environnement (ex. session Claude Code online sans
-//   credentials Supabase) plutôt que d'échouer de façon confuse.
+//   POST /api/queries (mêmes fingerprint + contraintes), relit la query et
+//   les candidats persistés dans Supabase, vérifie qu'on retrouve la même
+//   adresse ET que son badge de confiance est bien 5/5 (scoreCandidate sur
+//   les données relues, pas une valeur recalculée à part). Sautée proprement
+//   si NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY ne sont pas
+//   dans l'environnement (ex. session Claude Code online sans credentials
+//   Supabase) plutôt que d'échouer de façon confuse.
 //
 // Run: npm run e2e-test
 
@@ -172,23 +174,47 @@ async function runApiFlowTest(): Promise<'ok' | 'fail' | 'skipped'> {
     console.log(`[Phase 2] POST /api/queries -> queryId=${body.queryId}, ${body.candidateCount} candidat(s) persisté(s)`);
 
     const { getSupabase } = await import('../lib/supabase.ts');
+    const { searchQueryFromRow, candidateFromRow } = await import('../lib/db.ts');
+    const { scoreCandidate } = await import('../lib/scoring.ts');
     const supabase = getSupabase();
-    const { data, error } = await supabase
+
+    const { data: queryRow, error: queryError } = await supabase
+      .from('dpe_search_query')
+      .select('*')
+      .eq('id', body.queryId)
+      .single();
+    if (queryError || !queryRow) {
+      console.log(`[Phase 2] ⚠️  Lecture de la query Supabase impossible : ${queryError?.message ?? 'inconnue'}`);
+      return 'fail';
+    }
+
+    const { data: candidateRows, error: candidatesError } = await supabase
       .from('dpe_candidate')
-      .select('adresse')
+      .select('*')
       .eq('query_id', body.queryId);
-
-    if (error) {
-      console.log(`[Phase 2] ⚠️  Lecture Supabase impossible : ${error.message}`);
+    if (candidatesError) {
+      console.log(`[Phase 2] ⚠️  Lecture des candidats Supabase impossible : ${candidatesError.message}`);
       return 'fail';
     }
 
-    const found = (data ?? []).some((r: { adresse: string }) => r.adresse === EXPECTED_ADDRESS);
-    if (!found) {
-      console.log(`[Phase 2] ⚠️  Candidat validé non retrouvé parmi ${data?.length ?? 0} ligne(s) persistée(s).`);
+    const query = searchQueryFromRow(queryRow);
+    const candidates = (candidateRows ?? []).map(candidateFromRow);
+    const match = candidates.find((c) => c.adresse === EXPECTED_ADDRESS);
+
+    if (!match) {
+      console.log(`[Phase 2] ⚠️  Candidat validé non retrouvé parmi ${candidates.length} ligne(s) persistée(s).`);
       return 'fail';
     }
-    console.log(`[Phase 2] ✅  Flow POST -> Supabase -> lecture retrouve l'adresse confirmée (${EXPECTED_ADDRESS}).`);
+
+    const { score, total } = scoreCandidate(query, match);
+    if (score !== total) {
+      console.log(`[Phase 2] ⚠️  Candidat retrouvé mais badge ${score}/${total} (attendu ${total}/${total}).`);
+      return 'fail';
+    }
+
+    console.log(
+      `[Phase 2] ✅  Flow POST -> Supabase -> lecture retrouve l'adresse confirmée (${EXPECTED_ADDRESS}) avec un badge ${score}/${total}.`
+    );
     return 'ok';
   } finally {
     server?.kill();

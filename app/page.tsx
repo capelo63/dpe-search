@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useState, type FormEvent } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { newSearchQuerySchema } from '@/types/dpe';
 import { MARSEILLE_CODES_POSTAUX } from '@/lib/marseille';
 
@@ -50,9 +50,47 @@ const initialState: FormState = {
   notes: '',
 };
 
+/**
+ * Pré-remplissage depuis le CTA "Élargir la recherche" de la shortlist
+ * (components/ShortlistView.tsx), qui encode la query précédente en query
+ * params. Absent de l'URL = valeur par défaut (formulaire vierge).
+ */
+function stateFromParams(params: URLSearchParams): FormState {
+  const get = (key: string) => params.get(key) ?? '';
+  return {
+    etiquetteDpe: get('etiquetteDpe'),
+    etiquetteGes: get('etiquetteGes'),
+    consoEp: get('consoEp'),
+    emissionGes: get('emissionGes'),
+    codePostal: get('codePostal'),
+    chercherToutMarseille: params.get('chercherToutMarseille') === 'true',
+    surfaceApprox: get('surfaceApprox'),
+    surfaceTolerancePct: get('surfaceTolerancePct') || '15',
+    nbNiveauMax: get('nbNiveauMax'),
+    nbLotsMin: get('nbLotsMin'),
+    nbLotsMax: get('nbLotsMax'),
+    anneeConstructionMax: get('anneeConstructionMax'),
+    listingUrl: get('listingUrl'),
+    listingAgence: get('listingAgence'),
+    listingPrix: get('listingPrix'),
+    notes: get('notes'),
+  };
+}
+
 export default function Home() {
+  return (
+    <Suspense>
+      <SearchForm />
+    </Suspense>
+  );
+}
+
+function SearchForm() {
   const router = useRouter();
-  const [form, setForm] = useState<FormState>(initialState);
+  const searchParams = useSearchParams();
+  const [form, setForm] = useState<FormState>(() =>
+    searchParams.size > 0 ? stateFromParams(searchParams) : initialState
+  );
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);

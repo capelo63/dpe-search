@@ -6,6 +6,23 @@ Vérification effectuée via `curl` en session Claude Code online, avant tout co
 
 ---
 
+## 0. IGN Plan v2 (Géoplateforme) — piège de schéma de tuiles
+
+Vérifié pendant l'intégration MapLibre (`components/CarteCandidats.tsx`) : malgré le chemin d'URL `/tms/1.0.0/GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2/{z}/{x}/{y}.png`, qui suggère la convention OGC TMS (axe Y inversé, origine en bas), **l'endpoint sert en réalité des tuiles en schéma XYZ standard** (même convention que Google/OSM/MapLibre par défaut).
+
+Test direct :
+
+```bash
+# Y "XYZ standard" (non inversé) pour Marseille, z=13 -> 200, vraie tuile PNG
+curl "https://data.geopf.fr/tms/1.0.0/GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2/13/4218/2999.png"
+# Y "TMS inversé" (2^13 - 1 - 2999 = 5192) pour la même tuile -> 404 systématique
+curl "https://data.geopf.fr/tms/1.0.0/GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2/13/4218/5192.png"
+```
+
+**Conséquence** : ne **pas** passer `scheme: 'tms'` sur la source raster MapLibre (comportement par défaut `'xyz'` correct). Avec `scheme: 'tms'`, la carte reste vide dès qu'on dépasse le zoom ~8-9 (tous les Y demandés tombent hors de la zone couverte) — confirmé en testant les deux configurations.
+
+---
+
 ## 1. BAN — Base Adresse Nationale
 
 Conforme au plan, aucune surprise.

@@ -14,6 +14,23 @@ export type CandidateScore = {
   criteria: Criterion[];
 };
 
+export type ScoredCandidate = Candidate & CandidateScore;
+
+export type ScoreTier = 'high' | 'medium' | 'low';
+
+/** 5/5 -> vert, 4/5 -> orange, ≤3/5 -> gris. */
+export function scoreTier(score: number, total: number): ScoreTier {
+  if (score >= total) return 'high';
+  if (score === total - 1) return 'medium';
+  return 'low';
+}
+
+export const SCORE_TIER_COLORS: Record<ScoreTier, { marker: string; badgeBg: string; badgeText: string }> = {
+  high: { marker: '#22c55e', badgeBg: 'bg-green-100', badgeText: 'text-green-800' },
+  medium: { marker: '#f97316', badgeBg: 'bg-orange-100', badgeText: 'text-orange-800' },
+  low: { marker: '#9ca3af', badgeBg: 'bg-gray-100', badgeText: 'text-gray-600' },
+};
+
 /**
  * Score "N/5" d'un candidat :
  * 1. Signature DPE exacte — toujours vrai, le filtre ADEME le garantit

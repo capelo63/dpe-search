@@ -40,3 +40,14 @@
     @apply focus:ring-2 focus:ring-ring;
   }
 }
+
+/* Survol d'une ligne du tableau -> marker mis en évidence sur la carte
+   (composants/CarteCandidats.tsx). Cible le SVG enfant, pas le wrapper
+   .maplibregl-marker lui-même : MapLibre pose déjà un translate() inline sur
+   le wrapper pour le positionnement, qu'un transform CSS sur ce même élément
+   écraserait. */
+.dpe-marker-highlighted svg {
+  transform: scale(1.35);
+  transform-origin: center bottom;
+  filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.6));
+}
