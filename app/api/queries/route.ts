@@ -87,6 +87,7 @@ export async function POST(request: Request) {
     nbLotsMax: input.nbLotsMax ?? null,
     nbNiveauMax: input.nbNiveauMax ?? null,
     anneeConstructionMax: input.anneeConstructionMax ?? null,
+    chercherToutMarseille: input.chercherToutMarseille,
     listingUrl: input.listingUrl ?? null,
     listingAgence: input.listingAgence ?? null,
     listingPrix: input.listingPrix ?? null,

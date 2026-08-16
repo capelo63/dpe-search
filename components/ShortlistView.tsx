@@ -13,9 +13,7 @@ import { CarteCandidats } from './CarteCandidats';
  * le CTA "Élargir la recherche". consoEp/emissionGes sont recopiés depuis
  * min (min = max = valeur exacte, cf. types/dpe.ts). surfaceApprox/tolérance
  * sont reconstruits depuis surface_min/surface_max (arrondi, forcément une
- * approximation de la saisie initiale). chercherToutMarseille n'est pas
- * persisté sur la query — mis à true ici puisque le point du CTA est
- * justement d'élargir.
+ * approximation de la saisie initiale).
  */
 function buildElargirUrl(query: SearchQuery): string {
   const params = new URLSearchParams();
@@ -24,7 +22,7 @@ function buildElargirUrl(query: SearchQuery): string {
   if (query.consoEpMin != null) params.set('consoEp', String(query.consoEpMin));
   if (query.emissionGesMin != null) params.set('emissionGes', String(query.emissionGesMin));
   params.set('codePostal', query.codePostal);
-  params.set('chercherToutMarseille', 'true');
+  params.set('chercherToutMarseille', String(query.chercherToutMarseille));
 
   if (query.surfaceMin != null && query.surfaceMax != null) {
     const approx = (query.surfaceMin + query.surfaceMax) / 2;
