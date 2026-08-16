@@ -21,6 +21,7 @@ export type SearchQueryRow = {
   nb_lots_max: number | null;
   nb_niveau_max: number | null;
   annee_construction_max: number | null;
+  chercher_tout_marseille: boolean;
   listing_url: string | null;
   listing_agence: string | null;
   listing_prix: number | null;
@@ -46,6 +47,7 @@ export function searchQueryFromRow(row: SearchQueryRow): SearchQuery {
     nbLotsMax: row.nb_lots_max,
     nbNiveauMax: row.nb_niveau_max,
     anneeConstructionMax: row.annee_construction_max,
+    chercherToutMarseille: row.chercher_tout_marseille,
     listingUrl: row.listing_url,
     listingAgence: row.listing_agence,
     listingPrix: row.listing_prix,
@@ -70,6 +72,7 @@ export function searchQueryToInsertRow(q: NewSearchQuery): Omit<SearchQueryRow, 
     nb_lots_max: q.nbLotsMax,
     nb_niveau_max: q.nbNiveauMax,
     annee_construction_max: q.anneeConstructionMax,
+    chercher_tout_marseille: q.chercherToutMarseille,
     listing_url: q.listingUrl,
     listing_agence: q.listingAgence,
     listing_prix: q.listingPrix,

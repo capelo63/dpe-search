@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { getSupabase } from '@/lib/supabase';
 import { searchQueryFromRow, candidateFromRow, type SearchQueryRow, type CandidateRow } from '@/lib/db';
 import { ShortlistView } from '@/components/ShortlistView';
+import { RecordRecentQuery } from '@/components/RecordRecentQuery';
 
 // SSR : fetch direct Supabase (pas de polling/SSE, cf. POST /api/queries qui
 // a déjà tout persisté avant de renvoyer queryId). Le rendu interactif
@@ -36,6 +37,8 @@ export default async function ShortlistPage({ params }: { params: Promise<{ quer
 
   return (
     <main className="mx-auto max-w-6xl px-6 py-12">
+      <RecordRecentQuery queryId={query.id} />
+
       <Link href="/" className="text-sm text-muted-foreground hover:underline">
         ← Nouvelle recherche
       </Link>

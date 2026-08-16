@@ -7,9 +7,9 @@ export type Etiquette = z.infer<typeof etiquetteSchema>;
 export type CandidateStatus = 'a_verifier' | 'ecarte' | 'confirme' | 'visite';
 
 // Miroir de dpe_search_query (supabase/migrations/20260815_dpe_v0.sql +
-// 20260816_dpe_v0_context_constraints.sql). conso_ep_min/max et
-// emission_ges_min/max sont des colonnes range en base, mais V0 fait du
-// matching exact (pas de tolérance, voir scripts/e2e-test.ts) :
+// 20260816_dpe_v0_context_constraints.sql + 20260818_dpe_v0_chercher_tout_marseille.sql).
+// conso_ep_min/max et emission_ges_min/max sont des colonnes range en base,
+// mais V0 fait du matching exact (pas de tolérance, voir scripts/e2e-test.ts) :
 // min = max = valeur saisie à l'écriture.
 export type SearchQuery = {
   id: string;
@@ -29,6 +29,7 @@ export type SearchQuery = {
   nbLotsMax: number | null;
   nbNiveauMax: number | null;
   anneeConstructionMax: number | null;
+  chercherToutMarseille: boolean;
   listingUrl: string | null;
   listingAgence: string | null;
   listingPrix: number | null;

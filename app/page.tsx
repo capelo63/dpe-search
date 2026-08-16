@@ -4,6 +4,7 @@ import { Suspense, useState, type FormEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { newSearchQuerySchema } from '@/types/dpe';
 import { MARSEILLE_CODES_POSTAUX } from '@/lib/marseille';
+import { addRecentQuery } from '@/lib/recent-queries';
 
 const ETIQUETTES = ['A', 'B', 'C', 'D', 'E', 'F', 'G'] as const;
 
@@ -129,6 +130,7 @@ function SearchForm() {
       if (!res.ok) {
         throw new Error(body.error ?? `Erreur ${res.status}`);
       }
+      addRecentQuery(body.queryId);
       router.push(`/shortlist/${body.queryId}`);
     } catch (err) {
       setSubmitError((err as Error).message);
@@ -138,8 +140,7 @@ function SearchForm() {
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-12">
-      <h1 className="text-2xl font-semibold">dpe-search</h1>
-      <p className="mt-2 text-muted-foreground">
+      <p className="text-muted-foreground">
         Signature DPE d&apos;une annonce Marseille → shortlist d&apos;adresses candidates.
       </p>
 
