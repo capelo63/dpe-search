@@ -20,7 +20,7 @@ export type BdnbEnrichment = {
   dpeBatiment: string | null;
 };
 
-type RawBdnbLine = {
+export type RawBdnbLine = {
   batiment_groupe_id: string;
   libelle_adr_principale_ban: string | null;
   hauteur_mean: number | null;
@@ -32,16 +32,45 @@ type RawBdnbLine = {
   classe_bilan_dpe: string | null;
 };
 
-function normalize(line: RawBdnbLine): BdnbEnrichment {
+// Plus haut que la plus haute tour d'habitation de Marseille : au-delà, on
+// considère qu'il s'agit d'une extraction géométrique BDNB corrompue plutôt
+// qu'un vrai bâtiment (observé en prod : nb_niveau=64.4 sur un candidat).
+const MAX_PLAUSIBLE_NB_NIVEAU = 20;
+
+function roundOrNull(value: number | null): number | null {
+  return value == null ? null : Math.round(value);
+}
+
+/**
+ * BDNB renvoie parfois nb_log / nb_log_rnc / nb_niveau en décimal (ex.
+ * nb_log_rnc=19.05, nb_niveau=3.0) — arrondi systématique avant tout usage
+ * (colonnes Supabase entières, scoring). nb_niveau subit en plus un
+ * sanity-check : au-delà de MAX_PLAUSIBLE_NB_NIVEAU c'est très probablement
+ * une valeur corrompue (ex. 64.4 observé en prod), pas un vrai gratte-ciel
+ * marseillais — on la neutralise en `null` plutôt que de polluer le scoring.
+ */
+export function normalizeBdnbLine(line: RawBdnbLine): BdnbEnrichment {
+  const nbLog = roundOrNull(line.nb_log);
+  const nbLogRnc = roundOrNull(line.nb_log_rnc);
+  let nbNiveau = roundOrNull(line.nb_niveau);
+
+  if (nbNiveau != null && nbNiveau > MAX_PLAUSIBLE_NB_NIVEAU) {
+    console.warn(
+      `[lib/bdnb] nb_niveau=${nbNiveau} rejeté pour ${line.batiment_groupe_id} ` +
+        `(> ${MAX_PLAUSIBLE_NB_NIVEAU}, probable extraction géométrique BDNB corrompue) — remplacé par null.`
+    );
+    nbNiveau = null;
+  }
+
   return {
     batimentGroupeId: line.batiment_groupe_id,
     libelleAdresse: line.libelle_adr_principale_ban,
     hauteurMoyenne: line.hauteur_mean,
     anneeConstruction: line.annee_construction,
-    nbLog: line.nb_log,
-    nbLogRnc: line.nb_log_rnc,
-    nbLots: line.nb_log_rnc ?? line.nb_log,
-    nbNiveau: line.nb_niveau,
+    nbLog,
+    nbLogRnc,
+    nbLots: nbLogRnc ?? nbLog,
+    nbNiveau,
     surfaceEmpriseSol: line.surface_emprise_sol,
     dpeBatiment: line.classe_bilan_dpe,
   };
@@ -70,7 +99,7 @@ export async function enrichBuilding(
     throw new Error(`BDNB ${res.status}: ${await res.text()}`);
   }
   const body = (await res.json()) as RawBdnbLine[];
-  return body[0] ? normalize(body[0]) : null;
+  return body[0] ? normalizeBdnbLine(body[0]) : null;
 }
 
 export type EnrichmentTarget = { codeInsee: string; identifiantBan: string | null };

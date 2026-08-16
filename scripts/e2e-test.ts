@@ -1,5 +1,10 @@
-// Test end-to-end en deux phases, sur le cas réel validé par l'utilisateur
+// Test end-to-end en trois phases, sur le cas réel validé par l'utilisateur
 // (25 Boulevard Boisson, 13004 Marseille) :
+//
+//   Phase 0 — unitaire, pure, sans réseau : normalizeBdnbLine() arrondit
+//   toujours nb_log/nb_log_rnc/nb_niveau et neutralise les nb_niveau
+//   aberrants (> 20). Garde contre la régression prod du 2026-08-16
+//   (nb_niveau=64.4 -> `invalid input syntax for type integer`).
 //
 //   Phase 1 — pipeline lib/ademe.ts -> lib/bdnb.ts en direct (pas de serveur,
 //   pas de Supabase). Sert de test de non-régression sur les wrappers API.
@@ -19,9 +24,66 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { cpToInsee, MARSEILLE_CODES_POSTAUX } from '../lib/marseille.ts';
 import { searchDpeBySignature, type AdemeMatch } from '../lib/ademe.ts';
-import { enrichBuilding, type BdnbEnrichment } from '../lib/bdnb.ts';
+import { enrichBuilding, normalizeBdnbLine, type BdnbEnrichment, type RawBdnbLine } from '../lib/bdnb.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
+
+function rawBdnbLine(overrides: Partial<RawBdnbLine>): RawBdnbLine {
+  return {
+    batiment_groupe_id: 'bdnb-bg-TEST',
+    libelle_adr_principale_ban: null,
+    hauteur_mean: null,
+    annee_construction: null,
+    nb_log: null,
+    nb_log_rnc: null,
+    nb_niveau: null,
+    surface_emprise_sol: null,
+    classe_bilan_dpe: null,
+    ...overrides,
+  };
+}
+
+function runBdnbNormalizationTest(): 'ok' | 'fail' {
+  let ok = true;
+
+  function check(label: string, actual: unknown, expected: unknown) {
+    const pass = actual === expected;
+    console.log(`  ${pass ? '✓' : '✗'} ${label} : ${actual} (attendu ${expected})`);
+    if (!pass) ok = false;
+  }
+
+  // Cas réel observé en prod : nb_niveau=64.4 a fait échouer l'insert
+  // Supabase ("invalid input syntax for type integer"). Doit être arrondi
+  // PUIS rejeté par le sanity-check (> 20), pas juste arrondi.
+  const corrompu = normalizeBdnbLine(rawBdnbLine({ nb_niveau: 64.4 }));
+  check('nb_niveau=64.4 -> neutralisé en null (sanity-check > 20)', corrompu.nbNiveau, null);
+
+  // Valeur limite : exactement 20 doit passer (le seuil est "> 20", pas ">= 20")
+  const limite = normalizeBdnbLine(rawBdnbLine({ nb_niveau: 20 }));
+  check('nb_niveau=20 -> conservé (limite incluse)', limite.nbNiveau, 20);
+
+  // Arrondi qui fait juste franchir le seuil : 20.6 -> 21 -> rejeté
+  const limiteArrondie = normalizeBdnbLine(rawBdnbLine({ nb_niveau: 20.6 }));
+  check('nb_niveau=20.6 -> arrondi à 21 puis neutralisé', limiteArrondie.nbNiveau, null);
+
+  // Décimal plausible (ex. nb_niveau=3.0 vu tel quel sur certains bâtiments)
+  const plausible = normalizeBdnbLine(rawBdnbLine({ nb_niveau: 3.0 }));
+  check('nb_niveau=3.0 -> entier 3', plausible.nbNiveau, 3);
+  check('nb_niveau=3.0 -> jamais de décimale', Number.isInteger(plausible.nbNiveau), true);
+
+  // null doit rester null (pas de donnée BDNB), pas 0 ni NaN
+  const absent = normalizeBdnbLine(rawBdnbLine({ nb_niveau: null }));
+  check('nb_niveau=null -> reste null', absent.nbNiveau, null);
+
+  // nb_log / nb_log_rnc arrondis eux aussi (cas réel : nb_log_rnc=19.05, nb_log=64.55)
+  const lots = normalizeBdnbLine(rawBdnbLine({ nb_log: 64.55, nb_log_rnc: 19.05 }));
+  check('nb_log=64.55 -> entier 65', lots.nbLog, 65);
+  check('nb_log_rnc=19.05 -> entier 19', lots.nbLogRnc, 19);
+  check('nbLots dérivé (nb_log_rnc) -> entier 19', lots.nbLots, 19);
+
+  console.log(ok ? '[Phase 0] ✅  normalizeBdnbLine() n\'émet jamais de décimale, valeurs aberrantes neutralisées.' : '[Phase 0] ⚠️  régression détectée.');
+  return ok ? 'ok' : 'fail';
+}
 
 // --- Fingerprint annonce (saisi manuellement par l'utilisateur) ---
 const fingerprint = {
@@ -222,12 +284,14 @@ async function runApiFlowTest(): Promise<'ok' | 'fail' | 'skipped'> {
 }
 
 async function main() {
+  const phase0 = runBdnbNormalizationTest();
+  console.log('');
   const phase1 = await runLibPipelineTest();
   console.log('');
   const phase2 = await runApiFlowTest();
 
-  console.log(`\nRésumé : Phase 1 (lib) = ${phase1} · Phase 2 (API+Supabase) = ${phase2}`);
-  process.exitCode = phase1 === 'fail' || phase2 === 'fail' ? 1 : 0;
+  console.log(`\nRésumé : Phase 0 (unitaire) = ${phase0} · Phase 1 (lib) = ${phase1} · Phase 2 (API+Supabase) = ${phase2}`);
+  process.exitCode = phase0 === 'fail' || phase1 === 'fail' || phase2 === 'fail' ? 1 : 0;
 }
 
 main().catch((err) => {

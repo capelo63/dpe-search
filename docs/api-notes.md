@@ -241,6 +241,18 @@ Le code INSEE Marseille se déduit du CP : arrondissement `13001` → `13201`, `
 
 Cette approche évite un géocodage BAN redondant (déjà fait par l'ADEME et la BDNB séparément) et est plus fiable que le matching adresse textuelle mentionné dans le brief.
 
+### ⚠️ Piège découvert en prod : `nb_log` / `nb_log_rnc` / `nb_niveau` parfois décimaux, parfois aberrants
+
+BDNB renvoie ces trois champs en `numeric` côté API, pas en entier : des valeurs comme `nb_log_rnc=19.05` ou `nb_niveau=3.0` sont courantes (arrondi bienvenu mais pas fait par l'API). Pire, un bâtiment observé en prod a renvoyé `nb_niveau=64.4` — largement au-delà de tout immeuble résidentiel marseillais plausible, probablement une extraction géométrique BDNB corrompue sur ce bâtiment précis (empreinte au sol mal détectée, hauteur mal estimée, etc.).
+
+Conséquence en prod : insert Supabase en échec (`invalid input syntax for type integer: "64.4"`) sur une colonne entière.
+
+**Corrigé dans `lib/bdnb.ts::normalizeBdnbLine()`** :
+- `nb_log`, `nb_log_rnc`, `nb_niveau` systématiquement arrondis (`Math.round()`) avant tout usage.
+- `nb_niveau` arrondi et **> 20** (plus haut que la plus haute tour d'habitation de Marseille) neutralisé en `null` avec un `console.warn` de traçabilité, plutôt que de polluer le scoring (`lib/scoring.ts`) ou l'insert Supabase avec une valeur aberrante.
+- Colonnes `dpe_search_query.nb_niveau_max` et `dpe_candidate.bdnb_nb_niveau` élargies en `numeric` en base par prudence (`20260817_dpe_v0_nb_niveau_numeric.sql`) — sans conséquence fonctionnelle puisque `Math.round()` renvoie toujours un entier, simple marge de sécurité.
+- Régression couverte par un test unitaire pur (pas d'appel réseau) dans `scripts/e2e-test.ts`, Phase 0.
+
 ---
 
 ## Résumé des écarts avec le plan initial
