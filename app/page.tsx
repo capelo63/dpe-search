@@ -1,10 +1,11 @@
 'use client';
 
-import { Suspense, useState, type FormEvent } from 'react';
+import { Suspense, useEffect, useState, type FormEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { newSearchQuerySchema } from '@/types/dpe';
+import { newSearchQuerySchema, cleanNoisyNumber, type SearchQuery } from '@/types/dpe';
 import { MARSEILLE_CODES_POSTAUX } from '@/lib/marseille';
 import { addRecentQuery } from '@/lib/recent-queries';
+import { computeDpeLabels } from '@/lib/dpe-labels';
 
 const ETIQUETTES = ['A', 'B', 'C', 'D', 'E', 'F', 'G'] as const;
 
@@ -14,10 +15,11 @@ function arrondissementLabel(cp: string): string {
 }
 
 type FormState = {
-  etiquetteDpe: string;
-  etiquetteGes: string;
   consoEp: string;
   emissionGes: string;
+  etage: string;
+  etiquetteDpeOverride: string;
+  etiquetteGesOverride: string;
   codePostal: string;
   chercherToutMarseille: boolean;
   surfaceApprox: string;
@@ -33,10 +35,11 @@ type FormState = {
 };
 
 const initialState: FormState = {
-  etiquetteDpe: '',
-  etiquetteGes: '',
   consoEp: '',
   emissionGes: '',
+  etage: '',
+  etiquetteDpeOverride: '',
+  etiquetteGesOverride: '',
   codePostal: '',
   chercherToutMarseille: false,
   surfaceApprox: '',
@@ -52,29 +55,43 @@ const initialState: FormState = {
 };
 
 /**
- * Pré-remplissage depuis le CTA "Élargir la recherche" de la shortlist
- * (components/ShortlistView.tsx), qui encode la query précédente en query
- * params. Absent de l'URL = valeur par défaut (formulaire vierge).
+ * Pré-remplissage depuis "Modifier la recherche" (?queryId=xxx, cf.
+ * components/ShortlistView.tsx et app/shortlist/[queryId]/page.tsx) : fetch
+ * de la query existante puis reconstruction de l'état formulaire. Soumettre
+ * crée une nouvelle query (pas d'UPDATE), l'historique garde donc trace de
+ * chaque tentative. surfaceApprox/tolérance sont reconstruits depuis
+ * surface_min/surface_max (arrondi, approximation de la saisie initiale).
+ * Les étiquettes ne réactivent pas automatiquement le mode surcharge : elles
+ * sont recalculées depuis conso/émission comme pour une saisie neuve, sauf
+ * si l'utilisateur rouvre "Modifier" lui-même.
  */
-function stateFromParams(params: URLSearchParams): FormState {
-  const get = (key: string) => params.get(key) ?? '';
+function stateFromQuery(query: SearchQuery): FormState {
+  let surfaceApprox = '';
+  let surfaceTolerancePct = '15';
+  if (query.surfaceMin != null && query.surfaceMax != null) {
+    const approx = (query.surfaceMin + query.surfaceMax) / 2;
+    const tolerance = approx > 0 ? Math.round(((query.surfaceMax - approx) / approx) * 100) : 15;
+    surfaceApprox = String(Math.round(approx));
+    surfaceTolerancePct = String(tolerance);
+  }
   return {
-    etiquetteDpe: get('etiquetteDpe'),
-    etiquetteGes: get('etiquetteGes'),
-    consoEp: get('consoEp'),
-    emissionGes: get('emissionGes'),
-    codePostal: get('codePostal'),
-    chercherToutMarseille: params.get('chercherToutMarseille') === 'true',
-    surfaceApprox: get('surfaceApprox'),
-    surfaceTolerancePct: get('surfaceTolerancePct') || '15',
-    nbNiveauMax: get('nbNiveauMax'),
-    nbLotsMin: get('nbLotsMin'),
-    nbLotsMax: get('nbLotsMax'),
-    anneeConstructionMax: get('anneeConstructionMax'),
-    listingUrl: get('listingUrl'),
-    listingAgence: get('listingAgence'),
-    listingPrix: get('listingPrix'),
-    notes: get('notes'),
+    consoEp: query.consoEpMin != null ? String(query.consoEpMin) : '',
+    emissionGes: query.emissionGesMin != null ? String(query.emissionGesMin) : '',
+    etage: query.etageMin != null ? String(query.etageMin) : '',
+    etiquetteDpeOverride: query.etiquetteDpe ?? '',
+    etiquetteGesOverride: query.etiquetteGes ?? '',
+    codePostal: query.codePostal,
+    chercherToutMarseille: query.chercherToutMarseille,
+    surfaceApprox,
+    surfaceTolerancePct,
+    nbNiveauMax: query.nbNiveauMax != null ? String(query.nbNiveauMax) : '',
+    nbLotsMin: query.nbLotsMin != null ? String(query.nbLotsMin) : '',
+    nbLotsMax: query.nbLotsMax != null ? String(query.nbLotsMax) : '',
+    anneeConstructionMax: query.anneeConstructionMax != null ? String(query.anneeConstructionMax) : '',
+    listingUrl: query.listingUrl ?? '',
+    listingAgence: query.listingAgence ?? '',
+    listingPrix: query.listingPrix != null ? String(query.listingPrix) : '',
+    notes: query.notes ?? '',
   };
 }
 
@@ -89,26 +106,73 @@ export default function Home() {
 function SearchForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [form, setForm] = useState<FormState>(() =>
-    searchParams.size > 0 ? stateFromParams(searchParams) : initialState
-  );
+  const queryIdParam = searchParams.get('queryId');
+
+  const [form, setForm] = useState<FormState>(initialState);
+  const [prefilling, setPrefilling] = useState(!!queryIdParam);
+  const [overrideActive, setOverrideActive] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    if (!queryIdParam) return;
+    let cancelled = false;
+    fetch(`/api/queries/${queryIdParam}`)
+      .then(async (res) => {
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error ?? `Erreur ${res.status}`);
+        return body as SearchQuery;
+      })
+      .then((query) => {
+        if (!cancelled) setForm(stateFromQuery(query));
+      })
+      .catch((err: Error) => {
+        if (!cancelled) setSubmitError(`Recherche introuvable : ${err.message}`);
+      })
+      .finally(() => {
+        if (!cancelled) setPrefilling(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [queryIdParam]);
+
   function set<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
   }
+
+  // Calcul live des étiquettes (Évolution 1) — même nettoyage que le
+  // schéma Zod (cleanNoisyNumber), pour accepter "206 kWh/m²/an EP" pendant
+  // la frappe sans attendre le submit.
+  const consoEpValue = cleanNoisyNumber(form.consoEp);
+  const emissionGesValue = form.emissionGes ? cleanNoisyNumber(form.emissionGes) : undefined;
+  const computedLabels =
+    typeof consoEpValue === 'number'
+      ? computeDpeLabels(consoEpValue, typeof emissionGesValue === 'number' ? emissionGesValue : undefined)
+      : null;
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setSubmitError(null);
     setFieldErrors({});
 
+    // Résout les étiquettes avant validation : surcharge manuelle si
+    // activée, sinon calcul automatique (lib/dpe-labels.ts). etiquetteDpe
+    // est toujours résolvable dès que conso EP est un nombre valide.
+    const resolvedEtiquetteDpe = form.etiquetteDpeOverride || computedLabels?.etiquetteDpe || undefined;
+    const resolvedEtiquetteGes = form.etiquetteGesOverride || computedLabels?.etiquetteGes || undefined;
+
+    const payload = {
+      ...form,
+      etiquetteDpe: resolvedEtiquetteDpe,
+      etiquetteGes: resolvedEtiquetteGes,
+    };
+
     // Validation client via le même schéma Zod que le serveur (types/dpe.ts) :
     // les valeurs bruitées collées depuis une annonce ("206 kWh/m²/an EP")
     // sont nettoyées par le preprocess du schéma avant tout contrôle.
-    const parsed = newSearchQuerySchema.safeParse(form);
+    const parsed = newSearchQuerySchema.safeParse(payload);
     if (!parsed.success) {
       const errors: Record<string, string> = {};
       for (const issue of parsed.error.issues) {
@@ -143,46 +207,15 @@ function SearchForm() {
       <p className="text-muted-foreground">
         Signature DPE d&apos;une annonce Marseille → shortlist d&apos;adresses candidates.
       </p>
+      {prefilling && <p className="mt-4 text-sm text-muted-foreground">Chargement de la recherche…</p>}
 
       <form onSubmit={handleSubmit} className="mt-8 space-y-8">
-        {/* (a) Signature DPE — obligatoire */}
+        {/* (a) Signature DPE — conso EP obligatoire, émission facultative, étiquettes calculées */}
         <fieldset className="space-y-4 rounded-lg border border-border p-4">
-          <legend className="px-1 text-sm font-medium">Signature DPE (obligatoire)</legend>
+          <legend className="px-1 text-sm font-medium">Signature DPE</legend>
 
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Étiquette DPE" error={fieldErrors.etiquetteDpe}>
-              <select
-                className="input"
-                value={form.etiquetteDpe}
-                onChange={(e) => set('etiquetteDpe', e.target.value)}
-              >
-                <option value="">—</option>
-                {ETIQUETTES.map((l) => (
-                  <option key={l} value={l}>
-                    {l}
-                  </option>
-                ))}
-              </select>
-            </Field>
-
-            <Field label="Étiquette GES" error={fieldErrors.etiquetteGes}>
-              <select
-                className="input"
-                value={form.etiquetteGes}
-                onChange={(e) => set('etiquetteGes', e.target.value)}
-              >
-                <option value="">—</option>
-                {ETIQUETTES.map((l) => (
-                  <option key={l} value={l}>
-                    {l}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Conso EP (kWh/m²/an)" error={fieldErrors.consoEp}>
+            <Field label="Conso EP (kWh/m²/an), obligatoire" error={fieldErrors.consoEp}>
               <input
                 className="input"
                 type="text"
@@ -198,12 +231,93 @@ function SearchForm() {
                 className="input"
                 type="text"
                 inputMode="decimal"
-                placeholder='ex. "8 kgCO2/m²/an"'
+                placeholder='ex. "8 kgCO2/m²/an" (facultatif)'
                 value={form.emissionGes}
                 onChange={(e) => set('emissionGes', e.target.value)}
               />
+              <span className="mt-1 block text-xs text-muted-foreground">
+                Facultatif. Sans cette valeur, ta recherche sera plus large — pense à renseigner les
+                contraintes contexte pour compenser.
+              </span>
             </Field>
           </div>
+
+          <Field
+            label={
+              form.emissionGes
+                ? 'Étage (numéro, ex. RDC = 0)'
+                : 'Étage (numéro, ex. RDC = 0) — obligatoire sans émission GES'
+            }
+            error={fieldErrors.etage}
+          >
+            <input
+              className="input"
+              type="text"
+              inputMode="numeric"
+              placeholder="ex. 3"
+              value={form.etage}
+              onChange={(e) => set('etage', e.target.value)}
+            />
+            {!form.emissionGes && (
+              <span className="mt-1 block text-xs text-muted-foreground">
+                Sans émission GES, l&apos;étage est nécessaire pour garder la recherche exploitable
+                (sinon trop de candidats à vérifier).
+              </span>
+            )}
+          </Field>
+
+          <div className="flex items-center justify-between gap-2 rounded-md bg-secondary px-3 py-2 text-sm">
+            {computedLabels ? (
+              <p>
+                DPE calculé : <strong>{computedLabels.etiquetteDpe}</strong>
+                {computedLabels.etiquetteGes &&
+                  ` (conso ${computedLabels.etiquetteConso} / GES ${computedLabels.etiquetteGes})`}
+              </p>
+            ) : (
+              <p className="text-muted-foreground">Saisis la conso EP pour voir l&apos;étiquette calculée.</p>
+            )}
+            <button
+              type="button"
+              onClick={() => setOverrideActive((v) => !v)}
+              className="shrink-0 text-xs text-muted-foreground hover:underline"
+            >
+              {overrideActive ? 'Utiliser le calcul automatique' : 'Modifier'}
+            </button>
+          </div>
+
+          {overrideActive && (
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Étiquette DPE (surcharge manuelle)" error={fieldErrors.etiquetteDpe}>
+                <select
+                  className="input"
+                  value={form.etiquetteDpeOverride}
+                  onChange={(e) => set('etiquetteDpeOverride', e.target.value)}
+                >
+                  <option value="">— calcul automatique —</option>
+                  {ETIQUETTES.map((l) => (
+                    <option key={l} value={l}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field label="Étiquette GES (surcharge manuelle)" error={fieldErrors.etiquetteGes}>
+                <select
+                  className="input"
+                  value={form.etiquetteGesOverride}
+                  onChange={(e) => set('etiquetteGesOverride', e.target.value)}
+                >
+                  <option value="">— calcul automatique —</option>
+                  {ETIQUETTES.map((l) => (
+                    <option key={l} value={l}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+          )}
         </fieldset>
 
         {/* (b) Périmètre géographique — obligatoire */}

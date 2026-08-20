@@ -8,7 +8,7 @@ export type SearchQueryRow = {
   created_at: string;
   code_postal: string;
   etiquette_dpe: string;
-  etiquette_ges: string;
+  etiquette_ges: string | null;
   conso_ep_min: number | null;
   conso_ep_max: number | null;
   emission_ges_min: number | null;
@@ -34,7 +34,7 @@ export function searchQueryFromRow(row: SearchQueryRow): SearchQuery {
     createdAt: row.created_at,
     codePostal: row.code_postal,
     etiquetteDpe: row.etiquette_dpe as Etiquette,
-    etiquetteGes: row.etiquette_ges as Etiquette,
+    etiquetteGes: row.etiquette_ges as Etiquette | null,
     consoEpMin: row.conso_ep_min,
     consoEpMax: row.conso_ep_max,
     emissionGesMin: row.emission_ges_min,

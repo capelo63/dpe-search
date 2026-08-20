@@ -39,16 +39,23 @@ export default async function ShortlistPage({ params }: { params: Promise<{ quer
     <main className="mx-auto max-w-6xl px-6 py-12">
       <RecordRecentQuery queryId={query.id} />
 
-      <Link href="/" className="text-sm text-muted-foreground hover:underline">
-        ← Nouvelle recherche
-      </Link>
+      <div className="flex items-center gap-4">
+        <Link href="/" className="text-sm text-muted-foreground hover:underline">
+          ← Nouvelle recherche
+        </Link>
+        <Link href={`/?queryId=${query.id}`} className="text-sm text-muted-foreground hover:underline">
+          Modifier la recherche
+        </Link>
+      </div>
 
       <h1 className="mt-2 text-2xl font-semibold">
-        Shortlist — CP {query.codePostal}, DPE {query.etiquetteDpe}/{query.etiquetteGes}
+        Shortlist — CP {query.codePostal}, DPE {query.etiquetteDpe}
+        {query.etiquetteGes ? `/${query.etiquetteGes}` : ''}
       </h1>
       <p className="mt-1 text-sm text-muted-foreground">
         {candidates.length} candidat{candidates.length !== 1 ? 's' : ''} · conso EP {query.consoEpMin}{' '}
-        kWh/m²/an · émission GES {query.emissionGesMin} kgCO2/m²/an
+        kWh/m²/an
+        {query.emissionGesMin != null && <> · émission GES {query.emissionGesMin} kgCO2/m²/an</>}
       </p>
 
       <ShortlistView query={query} candidates={candidates} />

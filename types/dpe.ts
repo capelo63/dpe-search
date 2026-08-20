@@ -16,7 +16,9 @@ export type SearchQuery = {
   createdAt: string;
   codePostal: string;
   etiquetteDpe: Etiquette;
-  etiquetteGes: Etiquette;
+  // Nullable depuis V1.1 : l'émission GES (et donc l'étiquette GES qui en
+  // dérive, cf. lib/dpe-labels.ts) est désormais facultative en saisie.
+  etiquetteGes: Etiquette | null;
   consoEpMin: number | null;
   consoEpMax: number | null;
   emissionGesMin: number | null;
@@ -75,8 +77,11 @@ export type NewCandidate = Omit<Candidate, 'id' | 'createdAt'>;
  * parseFloat s'arrête à la première virgule (pas de conversion virgule ->
  * point) : sans incidence ici, les signatures DPE affichées sur une annonce
  * sont toujours des entiers (voir docs/api-notes.md).
+ * Exportée pour être réutilisée telle quelle par l'affichage "DPE calculé"
+ * en live dans app/page.tsx (même nettoyage que la validation Zod, pas de
+ * logique dupliquée).
  */
-function cleanNoisyNumber(val: unknown): unknown {
+export function cleanNoisyNumber(val: unknown): unknown {
   if (typeof val === 'number' || val == null) return val;
   if (typeof val !== 'string') return val;
   const cleaned = val.replace(/[^\d.,]/g, '');
@@ -95,11 +100,23 @@ export const codePostalSchema = z.enum(MARSEILLE_CODES_POSTAUX as [string, ...st
 
 export const newSearchQuerySchema = z
   .object({
-    // (a) Signature DPE — obligatoire
-    etiquetteDpe: etiquetteSchema,
-    etiquetteGes: etiquetteSchema,
+    // (a) Signature DPE — conso EP seule est obligatoire. Les étiquettes
+    // sont calculées (lib/dpe-labels.ts::computeDpeLabels) à partir des
+    // valeurs numériques, donc facultatives ici : présentes seulement si
+    // l'utilisateur a activé la surcharge manuelle (~5% de cas, ancien DPE
+    // avec des seuils différents). L'émission GES elle-même est facultative
+    // depuis V1.1 — sans elle, la recherche perd une dimension mais reste
+    // exploitable (cf. lib/ademe.ts::searchDpe et lib/scoring.ts).
+    etiquetteDpe: etiquetteSchema.optional(),
+    etiquetteGes: etiquetteSchema.optional(),
     consoEp: noisy(z.number().nonnegative()),
-    emissionGes: noisy(z.number().nonnegative()),
+    emissionGes: noisy(z.number().nonnegative().optional()),
+    // Requis quand emissionGes est absent (cf. .refine ci-dessous) : sans
+    // émission, conso EP seule ne discrimine pas assez pour rester dans un
+    // volume enrichissable par BDNB en une requête synchrone (voir
+    // lib/ademe.ts). Filtre ADEME exact (pas une plage), cf.
+    // numero_etage_appartement.
+    etage: noisy(z.number().int().nonnegative().optional()),
 
     // (b) Périmètre géographique — obligatoire
     codePostal: codePostalSchema,
@@ -131,6 +148,10 @@ export const newSearchQuerySchema = z
   .refine((data) => data.nbLotsMin == null || data.nbLotsMax == null || data.nbLotsMin <= data.nbLotsMax, {
     message: 'Le nb de lots min doit être ≤ au nb de lots max',
     path: ['nbLotsMax'],
+  })
+  .refine((data) => data.emissionGes != null || data.etage != null, {
+    message: "Sans émission GES, l'étage est requis pour garder une recherche exploitable",
+    path: ['etage'],
   });
 
 export type NewSearchQueryInput = z.infer<typeof newSearchQuerySchema>;

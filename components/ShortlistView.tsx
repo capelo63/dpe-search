@@ -8,40 +8,6 @@ import { FiltresDynamiques, type Filters, type FilterBounds } from './FiltresDyn
 import { TableCandidats } from './TableCandidats';
 import { CarteCandidats } from './CarteCandidats';
 
-/**
- * Reconstruit les query params du formulaire depuis la query persistée, pour
- * le CTA "Élargir la recherche". consoEp/emissionGes sont recopiés depuis
- * min (min = max = valeur exacte, cf. types/dpe.ts). surfaceApprox/tolérance
- * sont reconstruits depuis surface_min/surface_max (arrondi, forcément une
- * approximation de la saisie initiale).
- */
-function buildElargirUrl(query: SearchQuery): string {
-  const params = new URLSearchParams();
-  params.set('etiquetteDpe', query.etiquetteDpe);
-  params.set('etiquetteGes', query.etiquetteGes);
-  if (query.consoEpMin != null) params.set('consoEp', String(query.consoEpMin));
-  if (query.emissionGesMin != null) params.set('emissionGes', String(query.emissionGesMin));
-  params.set('codePostal', query.codePostal);
-  params.set('chercherToutMarseille', String(query.chercherToutMarseille));
-
-  if (query.surfaceMin != null && query.surfaceMax != null) {
-    const approx = (query.surfaceMin + query.surfaceMax) / 2;
-    const tolerance = approx > 0 ? Math.round(((query.surfaceMax - approx) / approx) * 100) : 15;
-    params.set('surfaceApprox', String(Math.round(approx)));
-    params.set('surfaceTolerancePct', String(tolerance));
-  }
-  if (query.nbNiveauMax != null) params.set('nbNiveauMax', String(query.nbNiveauMax));
-  if (query.nbLotsMin != null) params.set('nbLotsMin', String(query.nbLotsMin));
-  if (query.nbLotsMax != null) params.set('nbLotsMax', String(query.nbLotsMax));
-  if (query.anneeConstructionMax != null) params.set('anneeConstructionMax', String(query.anneeConstructionMax));
-  if (query.listingUrl) params.set('listingUrl', query.listingUrl);
-  if (query.listingAgence) params.set('listingAgence', query.listingAgence);
-  if (query.listingPrix != null) params.set('listingPrix', String(query.listingPrix));
-  if (query.notes) params.set('notes', query.notes);
-
-  return `/?${params.toString()}`;
-}
-
 export function ShortlistView({
   query,
   candidates: initialCandidates,
@@ -142,10 +108,10 @@ export function ShortlistView({
         <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
           <p>Aucun candidat ne passe ces filtres.</p>
           <Link
-            href={buildElargirUrl(query)}
+            href={`/?queryId=${query.id}`}
             className="mt-3 inline-block rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
           >
-            Élargir la recherche
+            Modifier la recherche
           </Link>
         </div>
       ) : (

@@ -158,7 +158,11 @@ export default function HistoriquePage() {
 function HistoryRow({ entry }: { entry: HistoryEntry }) {
   const { query, candidateCount, statusCounts } = entry;
   const cpLabel = query.chercherToutMarseille ? 'Tout Marseille' : query.codePostal;
-  const signature = `${query.etiquetteDpe}/${query.etiquetteGes} · ${query.consoEpMin ?? '–'} · ${query.emissionGesMin ?? '–'}`;
+  const etiquettes = query.etiquetteGes ? `${query.etiquetteDpe}/${query.etiquetteGes}` : query.etiquetteDpe;
+  const signature =
+    query.emissionGesMin != null
+      ? `${etiquettes} · ${query.consoEpMin ?? '–'} · ${query.emissionGesMin}`
+      : `${etiquettes} · ${query.consoEpMin ?? '–'}`;
   const statusParts = STATUS_ORDER.filter((s) => (statusCounts[s] ?? 0) > 0).map(
     (s) => `${statusCounts[s]} ${statusLabel(s, statusCounts[s] ?? 0)}`
   );
