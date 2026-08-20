@@ -2,9 +2,9 @@ import type { Candidate, SearchQuery } from '@/types/dpe';
 
 export type Criterion = {
   label: string;
-  /** true si le candidat satisfait le critère, ou si le critère n'était pas renseigné sur la query (vacuously true). */
+  /** true si le candidat satisfait le critère. */
   passed: boolean;
-  /** false si la query n'avait pas renseigné ce critère : compte quand même dans le score, mais n'a rien "prouvé". */
+  /** false si la query n'avait pas renseigné ce critère : n'entre ni dans le score ni dans le total. */
   applicable: boolean;
 };
 
@@ -18,7 +18,7 @@ export type ScoredCandidate = Candidate & CandidateScore;
 
 export type ScoreTier = 'high' | 'medium' | 'low';
 
-/** 5/5 -> vert, 4/5 -> orange, ≤3/5 -> gris. */
+/** Score parfait -> vert, un cran en dessous -> orange, le reste -> gris. Générique : ne suppose pas un total fixe. */
 export function scoreTier(score: number, total: number): ScoreTier {
   if (score >= total) return 'high';
   if (score === total - 1) return 'medium';
@@ -32,48 +32,42 @@ export const SCORE_TIER_COLORS: Record<ScoreTier, { marker: string; badgeBg: str
 };
 
 /**
- * Score "N/5" d'un candidat :
- * 1. Signature DPE exacte — toujours vrai, le filtre ADEME le garantit
- *    structurellement pour tout candidat retourné.
- * 2. Surface habitable — toujours vrai pour un candidat persisté : déjà
- *    appliqué en pré-filtre côté ADEME (lib/ademe.ts::searchDpe), pas
- *    ré-évalué ici.
- * 3-5. Nb niveaux / nb de lots / année de construction — évalués ici contre
- *    l'enrichissement BDNB du candidat, car ces valeurs n'existent qu'après
- *    la jointure ADEME->BDNB (pas filtrables au moment de la requête ADEME).
- *
- * Un critère non renseigné sur la query (`applicable: false`) compte comme
- * satisfait plutôt que d'exclure le candidat.
+ * Score "N/M" dynamique (V1.1) : M dépend des critères réellement renseignés
+ * sur la query, pas d'un total fixe. Signature (conso EP) et surface ne sont
+ * plus comptées ici — ce sont des pré-filtres côté recherche ADEME
+ * (lib/ademe.ts::searchDpe), donc structurellement toujours vraies pour tout
+ * candidat persisté, elles ne discriminaient rien. Émission GES, en
+ * revanche, redevient un critère à part entière : depuis que la recherche
+ * tolère ±0.5 (lib/ademe.ts), un candidat peut passer le pré-filtre sans
+ * matcher exactement — le critère ici distingue un match exact d'un match
+ * "juste dans la fenêtre de tolérance". Un critère non applicable (non
+ * renseigné sur la query) est exclu du décompte, pas compté comme satisfait.
  */
 export function scoreCandidate(query: SearchQuery, candidate: Candidate): CandidateScore {
   const criteria: Criterion[] = [
-    {
-      label: `Signature DPE exacte (${query.etiquetteDpe}/${query.etiquetteGes}, ${query.consoEpMin} kWh/m²/an, ${query.emissionGesMin} kgCO2/m²/an)`,
-      passed: true,
-      applicable: true,
-    },
-    surfaceCriterion(query),
+    emissionPrecisionCriterion(query, candidate),
     nbNiveauCriterion(query, candidate),
     nbLotsCriterion(query, candidate),
     anneeConstructionCriterion(query, candidate),
   ];
 
+  const applicable = criteria.filter((c) => c.applicable);
   return {
-    score: criteria.filter((c) => c.passed).length,
-    total: criteria.length,
+    score: applicable.filter((c) => c.passed).length,
+    total: applicable.length,
     criteria,
   };
 }
 
-function surfaceCriterion(query: SearchQuery): Criterion {
-  const applicable = query.surfaceMin != null || query.surfaceMax != null;
-  return {
-    label: applicable
-      ? `Surface habitable ∈ [${query.surfaceMin ?? '–'}, ${query.surfaceMax ?? '–'}] m²`
-      : 'Surface habitable',
-    passed: true, // pré-filtré à la recherche ADEME, donc toujours vrai pour un candidat persisté
-    applicable,
-  };
+function emissionPrecisionCriterion(query: SearchQuery, candidate: Candidate): Criterion {
+  if (query.emissionGesMin == null) {
+    return { label: 'Émission GES', passed: true, applicable: false };
+  }
+  const label = `Émission GES = ${query.emissionGesMin} kgCO2/m²/an (exact)`;
+  if (candidate.emissionGes == null) {
+    return { label, passed: true, applicable: true };
+  }
+  return { label, passed: candidate.emissionGes === query.emissionGesMin, applicable: true };
 }
 
 function nbNiveauCriterion(query: SearchQuery, candidate: Candidate): Criterion {

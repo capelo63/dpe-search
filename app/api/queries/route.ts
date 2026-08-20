@@ -4,6 +4,7 @@ import { searchDpe } from '@/lib/ademe';
 import { enrichBuildings } from '@/lib/bdnb';
 import { getSupabase } from '@/lib/supabase';
 import { searchQueryToInsertRow, candidateToInsertRow } from '@/lib/db';
+import { computeDpeLabels } from '@/lib/dpe-labels';
 
 /**
  * Flow synchrone V0 (budget round-trip cible : ≤4s) : valide la saisie,
@@ -37,13 +38,13 @@ export async function POST(request: Request) {
   try {
     ademeMatches = await searchDpe({
       codePostal: input.codePostal,
-      etiquetteDpe: input.etiquetteDpe,
-      etiquetteGes: input.etiquetteGes,
       consoEp: input.consoEp,
       emissionGes: input.emissionGes,
       chercherToutMarseille: input.chercherToutMarseille,
       surfaceMin,
       surfaceMax,
+      etageMin: input.etage ?? null,
+      etageMax: input.etage ?? null,
     });
   } catch (err) {
     return NextResponse.json(
@@ -71,18 +72,27 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: (err as Error).message }, { status: 500 });
   }
 
+  // Le client calcule et envoie normalement déjà les étiquettes (via
+  // lib/dpe-labels.ts, sauf surcharge manuelle) ; ce repli serveur les
+  // recalcule si elles manquent malgré tout — mêmes seuils, une seule
+  // implémentation. etiquetteDpe est garantie calculable (consoEp reste
+  // obligatoire), etiquetteGes reste null sans émission ni surcharge.
+  const computedLabels = computeDpeLabels(input.consoEp, input.emissionGes);
+  const etiquetteDpe = input.etiquetteDpe ?? computedLabels.etiquetteDpe;
+  const etiquetteGes = input.etiquetteGes ?? computedLabels.etiquetteGes;
+
   const newQuery: NewSearchQuery = {
     codePostal: input.codePostal,
-    etiquetteDpe: input.etiquetteDpe,
-    etiquetteGes: input.etiquetteGes,
+    etiquetteDpe,
+    etiquetteGes,
     consoEpMin: input.consoEp,
     consoEpMax: input.consoEp,
-    emissionGesMin: input.emissionGes,
-    emissionGesMax: input.emissionGes,
+    emissionGesMin: input.emissionGes ?? null,
+    emissionGesMax: input.emissionGes ?? null,
     surfaceMin,
     surfaceMax,
-    etageMin: null,
-    etageMax: null,
+    etageMin: input.etage ?? null,
+    etageMax: input.etage ?? null,
     nbLotsMin: input.nbLotsMin ?? null,
     nbLotsMax: input.nbLotsMax ?? null,
     nbNiveauMax: input.nbNiveauMax ?? null,

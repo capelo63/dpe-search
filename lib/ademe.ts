@@ -1,17 +1,37 @@
 import { z } from 'zod';
 import { cpToInsee, MARSEILLE_CODES_POSTAUX } from './marseille';
-import { etiquetteSchema, type Etiquette } from '@/types/dpe';
 
 // Voir docs/api-notes.md pour le détail des pièges (WAF, champ de filtre
 // retenu, taille de page) découverts pendant la vérification API.
 const ADEME_BASE = 'https://data.ademe.fr/data-fair/api/v1/datasets/dpe03existant/lines';
 const USER_AGENT = 'dpe-search/0.1 (+contact: cyril@hugon.link)';
 
+// Tolérance d'arrondi (V1.1) : les étiquettes ne sont plus saisies (calculées,
+// cf. lib/dpe-labels.ts), donc plus filtrées côté ADEME — seules les valeurs
+// numériques comptent désormais. ±0.5 absorbe l'écart entre la valeur
+// affichée (arrondie) sur une annonce et la valeur réellement stockée côté
+// ADEME (parfois décimale, cf. docs/api-notes.md).
+//
+// ⚠️ Vérifié empiriquement (cas réel 25 Boulevard Boisson, conso=206,
+// émission=8) : une plage ±0.5 sur CHAQUE requête, sans filtre étiquette,
+// remonte des centaines de candidats bruts dès qu'on élargit à tout
+// Marseille (478 avec émission, 1300+ sans), et le bâtiment recherché peut
+// se retrouver n'importe où dans un ordre de retour ADEME qui n'a aucun
+// rapport avec la pertinence (position 466/478 observée) — largement au-delà
+// de ce que BDNB peut enrichir en une seule requête synchrone (120 req/min,
+// voir lib/bdnb.ts). D'où la stratégie "exact d'abord" ci-dessous : la
+// plupart des annonces affichent des valeurs déjà stockées telles quelles
+// côté ADEME (validé sur ce cas réel : conso_5_usages_par_m2_ep vaut
+// exactement 206, pas 205.6 arrondi) donc un match exact suffit et reste
+// précis ; la tolérance ±0.5 ne sert plus qu'en repli, pour les cas plus
+// rares où la valeur stockée est réellement décimale.
+const ROUNDING_TOLERANCE = 0.5;
+
 export const ademeSignatureSchema = z.object({
-  etiquetteDpe: etiquetteSchema,
-  etiquetteGes: etiquetteSchema,
   consoEp: z.number(),
-  emissionGes: z.number(),
+  emissionGes: z.number().optional(),
+  /** Étage exact (numero_etage_appartement) — filtre ADEME direct, pas une plage. */
+  etage: z.number().optional(),
 });
 export type AdemeSignature = z.infer<typeof ademeSignatureSchema>;
 
@@ -92,11 +112,65 @@ function normalize(line: RawAdemeLine): AdemeMatch {
   };
 }
 
+async function runAdemeQuery(qs: string): Promise<AdemeMatch[]> {
+  const url = new URL(ADEME_BASE);
+  url.searchParams.set('qs', qs);
+  // Le repli tolérance (ci-dessous) peut remonter des centaines de lignes
+  // sur "tout Marseille" — 2000 laisse de la marge par rapport aux ~1300
+  // observés en vérification ; ADEME accepte des size bien plus grands sans
+  // broncher (testé jusqu'à 5000).
+  url.searchParams.set('size', '2000');
+  url.searchParams.set('select', SELECT_FIELDS);
+
+  const res = await fetch(url, { headers: { 'User-Agent': USER_AGENT } });
+  if (!res.ok) {
+    throw new Error(`ADEME ${res.status}: ${await res.text()}`);
+  }
+  const body = (await res.json()) as { results: RawAdemeLine[] };
+  return body.results.map(normalize);
+}
+
+function buildClauses(
+  inseeClause: string,
+  parsed: AdemeSignature,
+  useTolerance: boolean
+): string {
+  const clauses = [`(${inseeClause})`];
+
+  clauses.push(
+    useTolerance
+      ? `conso_5_usages_par_m2_ep:[${parsed.consoEp - ROUNDING_TOLERANCE} TO ${parsed.consoEp + ROUNDING_TOLERANCE}]`
+      : `conso_5_usages_par_m2_ep:${parsed.consoEp}`
+  );
+
+  if (parsed.emissionGes != null) {
+    clauses.push(
+      useTolerance
+        ? `emission_ges_5_usages_par_m2:[${parsed.emissionGes - ROUNDING_TOLERANCE} TO ${parsed.emissionGes + ROUNDING_TOLERANCE}]`
+        : `emission_ges_5_usages_par_m2:${parsed.emissionGes}`
+    );
+  }
+
+  if (parsed.etage != null) {
+    clauses.push(`numero_etage_appartement:${parsed.etage}`);
+  }
+
+  return clauses.join(' AND ');
+}
+
 /**
- * Recherche par signature DPE exacte (étiquettes + conso/émission), sur un
- * ensemble de codes INSEE arrondissement donné. Pas de tolérance numérique :
- * la précision de la signature EST le mécanisme de désanonymisation (validé
- * sur cas réel — 25 Boulevard Boisson, 13004 — voir scripts/e2e-test.ts).
+ * Recherche par signature numérique (conso EP obligatoire, émission GES et
+ * étage optionnels), sur un ensemble de codes INSEE arrondissement donné.
+ * Ne filtre plus sur les étiquettes DPE/GES (V1.1) : elles sont désormais
+ * calculées à partir des mêmes valeurs numériques (lib/dpe-labels.ts), donc
+ * un filtre par étiquette serait redondant avec le filtre numérique.
+ *
+ * Stratégie en deux passes (voir le commentaire sur ROUNDING_TOLERANCE pour
+ * le pourquoi) : égalité stricte d'abord — rapide, précis, suffisant dans la
+ * plupart des cas puisque les valeurs affichées sur une annonce correspondent
+ * souvent exactement à ce qu'ADEME a stocké. Si ça ne renvoie rien, repli sur
+ * une tolérance ±0.5 (arrondi d'affichage) — plus large, mais seulement
+ * déclenché pour les cas qui en ont réellement besoin.
  */
 export async function searchDpeBySignature(
   signature: AdemeSignature,
@@ -112,37 +186,28 @@ export async function searchDpeBySignature(
   // diagnostiqueur peu fiable qui fait perdre ~1-2% de lignes légitimes en
   // bordure d'arrondissement. Voir docs/api-notes.md.
   const inseeClause = codesInsee.map((c) => `code_insee_ban:${c}`).join(' OR ');
-  const qs = [
-    `(${inseeClause})`,
-    `etiquette_dpe:${parsed.etiquetteDpe}`,
-    `etiquette_ges:${parsed.etiquetteGes}`,
-    `conso_5_usages_par_m2_ep:${parsed.consoEp}`,
-    `emission_ges_5_usages_par_m2:${parsed.emissionGes}`,
-  ].join(' AND ');
 
-  const url = new URL(ADEME_BASE);
-  url.searchParams.set('qs', qs);
-  url.searchParams.set('size', '200'); // signature exacte + tout Marseille peut dépasser 50 lignes
-  url.searchParams.set('select', SELECT_FIELDS);
-
-  const res = await fetch(url, { headers: { 'User-Agent': USER_AGENT } });
-  if (!res.ok) {
-    throw new Error(`ADEME ${res.status}: ${await res.text()}`);
+  const exact = await runAdemeQuery(buildClauses(inseeClause, parsed, false));
+  if (exact.length > 0) {
+    return exact;
   }
-  const body = (await res.json()) as { results: RawAdemeLine[] };
-  return body.results.map(normalize);
+  return runAdemeQuery(buildClauses(inseeClause, parsed, true));
 }
 
 export type SearchDpeParams = {
   codePostal: string;
-  etiquetteDpe: Etiquette;
-  etiquetteGes: Etiquette;
   consoEp: number;
-  emissionGes: number;
+  /** Facultative (V1.1) : absente, l'axe émission est simplement retiré de la requête ADEME. */
+  emissionGes?: number;
   /** Case à cocher formulaire "chercher dans tout Marseille" (13001-13016). */
   chercherToutMarseille?: boolean;
-  /** Contraintes annonce, appliquées en post-filtrage (champs absents/peu
-   *  fiables selon le type de DPE côté ADEME pour un filtrage qs direct). */
+  /** Contraintes annonce. surfaceMin/Max en post-filtrage (champ peu fiable
+   *  selon le type de DPE côté ADEME pour un filtrage qs direct). etageMin/Max
+   *  sert de source à un filtre ADEME exact (pas une plage) quand les deux
+   *  valent la même chose — cf. searchDpeBySignature. Requis par le
+   *  formulaire quand emissionGes est absent : sans lui, la signature
+   *  numérique seule (conso EP) remonte un pool bien trop large pour être
+   *  enrichi via BDNB en une requête synchrone (voir ROUNDING_TOLERANCE). */
   surfaceMin?: number | null;
   surfaceMax?: number | null;
   etageMin?: number | null;
@@ -152,19 +217,22 @@ export type SearchDpeParams = {
 /**
  * Point d'entrée applicatif : dérive le scope géographique du CP (ou des 16
  * arrondissements Marseille si chercherToutMarseille), interroge ADEME sur la
- * signature exacte, puis applique les contraintes surface/étage de la query.
+ * signature numérique (étage en filtre exact si etageMin === etageMax),
+ * puis applique la contrainte surface de la query en post-filtrage.
  */
 export async function searchDpe(params: SearchDpeParams): Promise<AdemeMatch[]> {
   const codesInsee = params.chercherToutMarseille
     ? MARSEILLE_CODES_POSTAUX.map(cpToInsee)
     : [cpToInsee(params.codePostal)];
 
+  const etage =
+    params.etageMin != null && params.etageMin === params.etageMax ? params.etageMin : undefined;
+
   const matches = await searchDpeBySignature(
     {
-      etiquetteDpe: params.etiquetteDpe,
-      etiquetteGes: params.etiquetteGes,
       consoEp: params.consoEp,
       emissionGes: params.emissionGes,
+      etage,
     },
     codesInsee
   );
@@ -173,10 +241,6 @@ export async function searchDpe(params: SearchDpeParams): Promise<AdemeMatch[]> 
     if (m.surfaceHabitable != null) {
       if (params.surfaceMin != null && m.surfaceHabitable < params.surfaceMin) return false;
       if (params.surfaceMax != null && m.surfaceHabitable > params.surfaceMax) return false;
-    }
-    if (m.numeroEtageAppartement != null) {
-      if (params.etageMin != null && m.numeroEtageAppartement < params.etageMin) return false;
-      if (params.etageMax != null && m.numeroEtageAppartement > params.etageMax) return false;
     }
     return true;
   });

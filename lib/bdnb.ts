@@ -104,21 +104,50 @@ export async function enrichBuilding(
 
 export type EnrichmentTarget = { codeInsee: string; identifiantBan: string | null };
 
+// Depuis que lib/ademe.ts ne filtre plus sur les étiquettes (V1.1, tolérance
+// ±0.5 sur les seules valeurs numériques), une recherche peut remonter des
+// centaines de candidats (jusqu'à ~1150 observés sur "tout Marseille" sans
+// émission — voir docs/api-notes.md). Un burst au-delà de ce plafond
+// dépasserait la limite 120 req/min de l'offre BDNB Open en un seul appel.
+const BDNB_ENRICHMENT_LIMIT = 100;
+
 /**
- * Enrichit plusieurs candidats en parallèle (Promise.all) : le budget
- * round-trip de POST /api/queries est de 4s, une boucle séquentielle ne
- * tiendrait pas dès qu'une signature élargie à tout Marseille remonte
- * plusieurs dizaines de candidats. Offre Open : 120 req/min, pas de clé —
- * une shortlist V0 typique (quelques dizaines de candidats) reste sous la
- * limite même en rafale ; à revisiter (ex. p-limit) si une signature très
- * fréquente + "tout Marseille" pousse ça plus haut.
+ * Enrichit jusqu'à BDNB_ENRICHMENT_LIMIT candidats en parallèle (Promise.all,
+ * un seul burst — largement sous la limite 120 req/min de l'offre Open sur
+ * un appel isolé). Au-delà, les candidats surnuméraires restent dans la
+ * shortlist (persistés côté app/api/queries/route.ts) mais sans
+ * enrichissement BDNB : `bdnbNbNiveau`/`bdnbNbLots`/etc. à `null`, ce qui
+ * les traite en "pas assez d'info pour exclure" côté lib/scoring.ts plutôt
+ * que de les faire échouer ou de les perdre silencieusement.
  * Retourne un enrichissement par candidat, même ordre, `null` si pas
- * d'identifiant_ban ou pas de bâtiment apparié dans BDNB.
+ * d'identifiant_ban, pas de bâtiment apparié dans BDNB, ou au-delà du plafond.
  */
 export async function enrichBuildings(
   targets: EnrichmentTarget[]
 ): Promise<(BdnbEnrichment | null)[]> {
-  return Promise.all(
-    targets.map((t) => (t.identifiantBan ? enrichBuilding(t.codeInsee, t.identifiantBan) : null))
+  const results: (BdnbEnrichment | null)[] = new Array(targets.length).fill(null);
+
+  const toEnrich = targets
+    .map((t, index) => ({ t, index }))
+    .filter(({ t }) => t.identifiantBan != null)
+    .slice(0, BDNB_ENRICHMENT_LIMIT);
+
+  // Chaque appel est isolé (pas de Promise.all nu) : observé en vérification,
+  // un timeout BDNB isolé ("statement timeout", 500) sur UN candidat ne doit
+  // pas faire perdre l'enrichissement de tous les autres. Le candidat en
+  // échec retombe simplement à `null` (même traitement qu'un bâtiment non
+  // apparié), tracé via console.warn pour ne pas le masquer silencieusement.
+  const enriched = await Promise.all(
+    toEnrich.map(({ t }) =>
+      enrichBuilding(t.codeInsee, t.identifiantBan as string).catch((err: Error) => {
+        console.warn(`[lib/bdnb] enrichissement échoué pour identifiant_ban=${t.identifiantBan} : ${err.message}`);
+        return null;
+      })
+    )
   );
+  toEnrich.forEach(({ index }, i) => {
+    results[index] = enriched[i];
+  });
+
+  return results;
 }
