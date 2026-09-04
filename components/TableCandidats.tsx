@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import type { CandidateStatus } from '@/types/dpe';
 import { scoreTier, SCORE_TIER_COLORS, type ScoredCandidate } from '@/lib/scoring';
+import { toTitleCase } from '@/lib/format-address';
 
 const STATUS_LABELS: Record<CandidateStatus, string> = {
   a_verifier: 'À vérifier',
@@ -70,7 +71,7 @@ export function TableCandidats({
                 onMouseLeave={() => onRowHover(null)}
                 className={`border-b border-border transition-colors ${isActive ? 'bg-accent' : ''}`}
               >
-                <td className="py-2 pr-4">{c.adresse}</td>
+                <td className="py-2 pr-4">{toTitleCase(c.adresse)}</td>
                 <td className="py-2 pr-4">{c.consoEp ?? '–'}</td>
                 <td className="py-2 pr-4">{c.emissionGes ?? '–'}</td>
                 <td className="py-2 pr-4">{c.surfaceHabitable ?? '–'}</td>

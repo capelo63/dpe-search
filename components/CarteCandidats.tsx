@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { scoreTier, SCORE_TIER_COLORS, type ScoredCandidate } from '@/lib/scoring';
+import { toTitleCase } from '@/lib/format-address';
 
 // Tuiles IGN Plan v2, Géoplateforme, licence ouverte — aucune clé requise.
 // ⚠️ Piège vérifié empiriquement (curl direct, tuiles réelles récupérées) :
@@ -21,11 +22,12 @@ function popupHtml(c: ScoredCandidate): string {
       : null;
   // URL de recherche Pappers Immobilier construite à partir de l'adresse —
   // pattern non vérifié par curl (contrairement à BAN/ADEME/BDNB), à confirmer.
-  const pappers = `https://immobilier.pappers.fr/recherche?q=${encodeURIComponent(c.adresse)}`;
+  const adresse = toTitleCase(c.adresse);
+  const pappers = `https://immobilier.pappers.fr/recherche?q=${encodeURIComponent(adresse)}`;
 
   return `
     <div style="font-size:13px;line-height:1.5;min-width:190px">
-      <div style="font-weight:600;margin-bottom:4px">${escapeHtml(c.adresse)}</div>
+      <div style="font-weight:600;margin-bottom:4px">${escapeHtml(adresse)}</div>
       <div>DPE ${escapeHtml(c.consoEp?.toString() ?? '–')} kWh/m²/an · ${escapeHtml(c.emissionGes?.toString() ?? '–')} kgCO2/m²/an</div>
       <div>Nb niveaux : ${c.bdnbNbNiveau ?? '–'} · Nb lots : ${c.bdnbNbLots ?? '–'} · Année : ${c.bdnbAnneeConstruction ?? '–'}</div>
       <div style="margin-top:6px;display:flex;gap:10px">

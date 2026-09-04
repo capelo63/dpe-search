@@ -22,10 +22,11 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { searchDpe, type AdemeMatch } from '../lib/ademe.ts';
+import { searchDpe, normalizeAdemeLine, type AdemeMatch, type RawAdemeLine } from '../lib/ademe.ts';
 import { enrichBuildings, normalizeBdnbLine, type BdnbEnrichment, type RawBdnbLine } from '../lib/bdnb.ts';
 import { computeDpeLabels } from '../lib/dpe-labels.ts';
 import { scoreCandidate } from '../lib/scoring.ts';
+import { toTitleCase } from '../lib/format-address.ts';
 import type { Candidate, SearchQuery } from '../types/dpe.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -137,6 +138,88 @@ function runDpeLabelsTest(): 'ok' | 'fail' {
   check('sans émission -> etiquetteDpe = etiquetteConso seule', sansEmission.etiquetteDpe, 'C');
 
   console.log(ok ? '[Phase 0] ✅  computeDpeLabels() respecte les seuils DPE 2021 sur les deux axes.' : '[Phase 0] ⚠️  régression détectée.');
+  return ok ? 'ok' : 'fail';
+}
+
+/**
+ * lib/format-address.ts::toTitleCase() — adresses ADEME en minuscules mises
+ * en forme pour l'affichage. Couvre les 3 cas particuliers cités par
+ * l'utilisateur : apostrophe (particule collée), particule en tête
+ * d'adresse, mot composé par un tiret (équivalent "initiales"/noms propres
+ * composés).
+ */
+function runAddressFormattingTest(): 'ok' | 'fail' {
+  let ok = true;
+
+  function check(label: string, actual: unknown, expected: unknown) {
+    const pass = actual === expected;
+    console.log(`  ${pass ? '✓' : '✗'} ${label} : "${actual}" (attendu "${expected}")`);
+    if (!pass) ok = false;
+  }
+
+  check('numéro + nom simple', toTitleCase('3 rue henri fiocca'), '3 Rue Henri Fiocca');
+  check('particule "de la" en milieu', toTitleCase('rue de la palud'), 'Rue de la Palud');
+  check(
+    'apostrophes doubles ("d\'Estienne d\'Orves")',
+    toTitleCase("boulevard d'estienne d'orves"),
+    "Boulevard d'Estienne d'Orves"
+  );
+  check('particule "de la" en milieu (2)', toTitleCase('traverse de la major'), 'Traverse de la Major');
+  check('particule "des"', toTitleCase('allée des tilleuls'), 'Allée des Tilleuls');
+  check('particule "du"', toTitleCase('rue du docteur fiolle'), 'Rue du Docteur Fiolle');
+  check('mot composé par un tiret', toTitleCase('boulevard jean-jaurès'), 'Boulevard Jean-Jaurès');
+  check("apostrophe \"l'\"", toTitleCase("impasse l'olivier"), "Impasse l'Olivier");
+  check('particule "du" (2)', toTitleCase('quai du port'), 'Quai du Port');
+  check(
+    'particule EN TÊTE d\'adresse -> capitalisée quand même',
+    toTitleCase('de la major traverse'),
+    'De la Major Traverse'
+  );
+
+  console.log(ok ? '[Phase 0] ✅  toTitleCase() gère particules, apostrophes et mots composés.' : '[Phase 0] ⚠️  régression détectée.');
+  return ok ? 'ok' : 'fail';
+}
+
+function rawAdemeLine(overrides: Partial<RawAdemeLine>): RawAdemeLine {
+  return {
+    numero_dpe: 'DPE-TEST',
+    code_insee_ban: '13201',
+    etiquette_dpe: 'D',
+    etiquette_ges: 'B',
+    conso_5_usages_par_m2_ep: 200,
+    emission_ges_5_usages_par_m2: 8,
+    ...overrides,
+  };
+}
+
+/**
+ * lib/ademe.ts::normalizeAdemeLine() — sanity-check surface_habitable (> 500
+ * m² pour un logement individuel = aberration quasi certaine), même logique
+ * que MAX_PLAUSIBLE_NB_NIVEAU côté BDNB. La comparaison arrondit d'abord :
+ * un bruit décimal juste au-dessus de 500 (500.1) reste conservé.
+ */
+function runAdemeSurfaceSanityTest(): 'ok' | 'fail' {
+  let ok = true;
+
+  function check(label: string, actual: unknown, expected: unknown) {
+    const pass = actual === expected;
+    console.log(`  ${pass ? '✓' : '✗'} ${label} : ${actual} (attendu ${expected})`);
+    if (!pass) ok = false;
+  }
+
+  const limite = normalizeAdemeLine(rawAdemeLine({ surface_habitable_logement: 500 }));
+  check('surface=500 -> conservée (limite incluse)', limite.surfaceHabitable, 500);
+
+  const limiteDecimale = normalizeAdemeLine(rawAdemeLine({ surface_habitable_logement: 500.1 }));
+  check('surface=500.1 -> conservée (arrondi 500, sous le seuil)', limiteDecimale.surfaceHabitable, 500.1);
+
+  const aberrante = normalizeAdemeLine(rawAdemeLine({ surface_habitable_logement: 1110 }));
+  check('surface=1110 -> rejetée en null (aberration)', aberrante.surfaceHabitable, null);
+
+  const absente = normalizeAdemeLine(rawAdemeLine({}));
+  check('surface absente -> reste null', absente.surfaceHabitable, null);
+
+  console.log(ok ? '[Phase 0] ✅  normalizeAdemeLine() neutralise les surfaces aberrantes (> 500 m²).' : '[Phase 0] ⚠️  régression détectée.');
   return ok ? 'ok' : 'fail';
 }
 
@@ -439,7 +522,14 @@ async function runApiFlowTest(): Promise<'ok' | 'fail' | 'skipped'> {
 }
 
 async function main() {
-  const phase0 = runBdnbNormalizationTest();
+  const phase0Bdnb = runBdnbNormalizationTest();
+  console.log('');
+  const phase0Labels = runDpeLabelsTest();
+  console.log('');
+  const phase0Address = runAddressFormattingTest();
+  console.log('');
+  const phase0Surface = runAdemeSurfaceSanityTest();
+  const phase0 = [phase0Bdnb, phase0Labels, phase0Address, phase0Surface].every((r) => r === 'ok') ? 'ok' : 'fail';
   console.log('');
   const phase1 = await runLibPipelineTest();
   console.log('');

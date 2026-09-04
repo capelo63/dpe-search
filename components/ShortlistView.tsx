@@ -115,7 +115,13 @@ export function ShortlistView({
           </Link>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+        // Colonnes explicites (pas de fractions fluides symétriques) : la
+        // carte garde une largeur fixe, le tableau prend le reste et
+        // scrolle horizontalement (overflow-x-auto, cf. TableCandidats)
+        // plutôt que de déborder sur la carte. En dessous de lg, layout
+        // vertical (tableau au-dessus, carte en dessous, chacun pleine
+        // largeur) — testé à 768px.
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_500px]">
           <TableCandidats
             candidates={filtered}
             hoveredId={hoveredId}
