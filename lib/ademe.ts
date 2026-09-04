@@ -71,7 +71,7 @@ const SELECT_FIELDS = [
   '_geopoint',
 ].join(',');
 
-type RawAdemeLine = {
+export type RawAdemeLine = {
   numero_dpe: string;
   identifiant_ban?: string | null;
   adresse_ban?: string;
@@ -89,10 +89,34 @@ type RawAdemeLine = {
   _geopoint?: string; // "lat,lon"
 };
 
-function normalize(line: RawAdemeLine): AdemeMatch {
+// Plus grand qu'aucun logement individuel plausible à Marseille : au-delà,
+// il s'agit très probablement d'une confusion diagnostiqueur avec la surface
+// de l'immeuble entier plutôt que du logement (même logique que
+// MAX_PLAUSIBLE_NB_NIVEAU dans lib/bdnb.ts). La comparaison arrondit d'abord
+// la valeur (comme lib/bdnb.ts) : un bruit décimal juste au-dessus de 500
+// (ex. 500.1) ne doit pas être rejeté, seule une valeur dont l'entier le
+// plus proche dépasse le seuil est une aberration certaine.
+const MAX_PLAUSIBLE_SURFACE_HABITABLE = 500;
+
+function sanitizeSurfaceHabitable(value: number | null, numeroDpe: string): number | null {
+  if (value != null && Math.round(value) > MAX_PLAUSIBLE_SURFACE_HABITABLE) {
+    console.warn(
+      `[lib/ademe] surface_habitable=${value} rejetée pour ${numeroDpe} ` +
+        `(> ${MAX_PLAUSIBLE_SURFACE_HABITABLE} m², probable aberration) — remplacée par null.`
+    );
+    return null;
+  }
+  return value;
+}
+
+export function normalizeAdemeLine(line: RawAdemeLine): AdemeMatch {
   const [latStr, lonStr] = (line._geopoint ?? '').split(',');
   const lat = latStr ? Number(latStr) : NaN;
   const lon = lonStr ? Number(lonStr) : NaN;
+  const surfaceHabitable = sanitizeSurfaceHabitable(
+    line.surface_habitable_logement ?? line.surface_habitable_immeuble ?? null,
+    line.numero_dpe
+  );
   return {
     numeroDpe: line.numero_dpe,
     identifiantBan: line.identifiant_ban ?? null,
@@ -103,7 +127,7 @@ function normalize(line: RawAdemeLine): AdemeMatch {
     etiquetteGes: line.etiquette_ges,
     consoEp: line.conso_5_usages_par_m2_ep,
     emissionGes: line.emission_ges_5_usages_par_m2,
-    surfaceHabitable: line.surface_habitable_logement ?? line.surface_habitable_immeuble ?? null,
+    surfaceHabitable,
     typeBatiment: line.type_batiment ?? null,
     dateEtablissementDpe: line.date_etablissement_dpe ?? null,
     numeroEtageAppartement: line.numero_etage_appartement ?? null,
@@ -127,7 +151,7 @@ async function runAdemeQuery(qs: string): Promise<AdemeMatch[]> {
     throw new Error(`ADEME ${res.status}: ${await res.text()}`);
   }
   const body = (await res.json()) as { results: RawAdemeLine[] };
-  return body.results.map(normalize);
+  return body.results.map(normalizeAdemeLine);
 }
 
 function buildClauses(
