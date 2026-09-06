@@ -6,6 +6,7 @@ import type { Candidate, CandidateStatus, Etiquette, NewCandidate, NewSearchQuer
 export type SearchQueryRow = {
   id: string;
   created_at: string;
+  user_id: string | null;
   code_postal: string;
   etiquette_dpe: string;
   etiquette_ges: string | null;
@@ -32,6 +33,7 @@ export function searchQueryFromRow(row: SearchQueryRow): SearchQuery {
   return {
     id: row.id,
     createdAt: row.created_at,
+    userId: row.user_id,
     codePostal: row.code_postal,
     etiquetteDpe: row.etiquette_dpe as Etiquette,
     etiquetteGes: row.etiquette_ges as Etiquette | null,
@@ -57,6 +59,7 @@ export function searchQueryFromRow(row: SearchQueryRow): SearchQuery {
 
 export function searchQueryToInsertRow(q: NewSearchQuery): Omit<SearchQueryRow, 'id' | 'created_at'> {
   return {
+    user_id: q.userId,
     code_postal: q.codePostal,
     etiquette_dpe: q.etiquetteDpe,
     etiquette_ges: q.etiquetteGes,

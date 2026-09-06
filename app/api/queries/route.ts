@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { newSearchQuerySchema, type NewCandidate, type NewSearchQuery } from '@/types/dpe';
 import { searchDpe } from '@/lib/ademe';
 import { enrichBuildings } from '@/lib/bdnb';
-import { getSupabase } from '@/lib/supabase';
+import { getSupabaseServerClient } from '@/lib/supabase-server';
 import { searchQueryToInsertRow, candidateToInsertRow } from '@/lib/db';
 import { computeDpeLabels } from '@/lib/dpe-labels';
 
@@ -13,8 +13,26 @@ import { computeDpeLabels } from '@/lib/dpe-labels';
  * candidats dans Supabase, retourne queryId. Pas de polling/SSE : le client
  * attend la réponse puis redirige vers /shortlist/[queryId] qui SSR-fetche
  * depuis Supabase.
+ *
+ * Checkpoint auth V1 : session requise (401 sinon), user_id assigné
+ * automatiquement sur la query créée. Pas encore de RLS stricte (policies
+ * grand ouvertes, cf. supabase/migrations/20260906_dpe_auth_v1.sql).
  */
 export async function POST(request: Request) {
+  let supabase;
+  try {
+    supabase = await getSupabaseServerClient();
+  } catch (err) {
+    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
+  }
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: 'Authentification requise' }, { status: 401 });
+  }
+
   const json = await request.json().catch(() => null);
   if (json === null) {
     return NextResponse.json({ error: 'Corps de requête JSON invalide' }, { status: 400 });
@@ -65,13 +83,6 @@ export async function POST(request: Request) {
     );
   }
 
-  let supabase;
-  try {
-    supabase = getSupabase();
-  } catch (err) {
-    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
-  }
-
   // Le client calcule et envoie normalement déjà les étiquettes (via
   // lib/dpe-labels.ts, sauf surcharge manuelle) ; ce repli serveur les
   // recalcule si elles manquent malgré tout — mêmes seuils, une seule
@@ -82,6 +93,7 @@ export async function POST(request: Request) {
   const etiquetteGes = input.etiquetteGes ?? computedLabels.etiquetteGes;
 
   const newQuery: NewSearchQuery = {
+    userId: user.id,
     codePostal: input.codePostal,
     etiquetteDpe,
     etiquetteGes,

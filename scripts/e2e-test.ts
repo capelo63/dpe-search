@@ -12,11 +12,13 @@
 //   Phase 2 — flow applicatif réel : spawn un serveur `next dev` éphémère,
 //   POST /api/queries (mêmes fingerprint + contraintes), relit la query et
 //   les candidats persistés dans Supabase, vérifie qu'on retrouve la même
-//   adresse ET que son badge de confiance est bien 5/5 (scoreCandidate sur
+//   adresse ET que son badge de confiance est bien 4/4 (scoreCandidate sur
 //   les données relues, pas une valeur recalculée à part). Sautée proprement
 //   si NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY ne sont pas
 //   dans l'environnement (ex. session Claude Code online sans credentials
-//   Supabase) plutôt que d'échouer de façon confuse.
+//   Supabase), ou si /api/queries exige une session (checkpoint auth V1,
+//   non simulable sans navigateur — magic link email only, pas de mot de
+//   passe scriptable) plutôt que d'échouer de façon confuse.
 //
 // Run: npm run e2e-test
 
@@ -468,6 +470,18 @@ async function runApiFlowTest(): Promise<'ok' | 'fail' | 'skipped'> {
       }),
     });
     const body = await res.json();
+    if (res.status === 401) {
+      // Checkpoint auth V1 : /api/queries exige désormais une session
+      // (cookie magic link), qu'un script headless sans navigateur ne peut
+      // pas produire (auth email-only, pas de mot de passe scriptable). Le
+      // flow réel est couvert par le test navigateur Playwright
+      // (docs/testing-conventions.md), pas ici.
+      console.log(
+        '[Phase 2] SKIPPED — POST /api/queries exige une session authentifiée (checkpoint auth V1) : ' +
+          'non simulable depuis ce script sans navigateur. Voir le test Playwright pour le flow réel.'
+      );
+      return 'skipped';
+    }
     if (!res.ok) {
       console.log(`[Phase 2] ⚠️  POST /api/queries a échoué (${res.status}): ${body.error}`);
       return 'fail';

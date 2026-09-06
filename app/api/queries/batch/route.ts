@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getSupabase } from '@/lib/supabase';
+import { getSupabaseServerClient, warnIfNotOwner } from '@/lib/supabase-server';
 import { searchQueryFromRow, type SearchQueryRow } from '@/lib/db';
 import type { CandidateStatus, SearchQuery } from '@/types/dpe';
 
@@ -22,21 +22,33 @@ export type QueryHistoryEntry = {
  * statut — un simple group-by en JS sur `select query_id, status` reste
  * largement suffisant aux volumes V0 et évite une migration de plus à faire
  * jouer manuellement.
+ *
+ * Checkpoint auth V1 : session requise (401 sinon). Pas encore de filtrage
+ * par user_id (RLS stricte au checkpoint suivant) : chaque query dont le
+ * user_id ne correspond pas à l'utilisateur courant est tracée via
+ * warnIfNotOwner plutôt que masquée.
  */
 export async function POST(request: Request) {
+  let supabase;
+  try {
+    supabase = await getSupabaseServerClient();
+  } catch (err) {
+    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
+  }
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: 'Authentification requise' }, { status: 401 });
+  }
+
   const json = await request.json().catch(() => null);
   const parsed = bodySchema.safeParse(json);
   if (!parsed.success) {
     return NextResponse.json({ error: 'Requête invalide (ids attendus)' }, { status: 400 });
   }
   const { ids } = parsed.data;
-
-  let supabase;
-  try {
-    supabase = getSupabase();
-  } catch (err) {
-    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
-  }
 
   const { data: queryRows, error: queryError } = await supabase
     .from('dpe_search_query')
@@ -72,6 +84,7 @@ export async function POST(request: Request) {
 
   const entries: QueryHistoryEntry[] = (queryRows ?? []).map((row) => {
     const query = searchQueryFromRow(row as SearchQueryRow);
+    warnIfNotOwner(user.id, query.userId, `POST /api/queries/batch`);
     const statusCounts = statusByQuery.get(query.id) ?? {};
     const candidateCount = Object.values(statusCounts).reduce((a, b) => a + (b ?? 0), 0);
     return { query, candidateCount, statusCounts };
