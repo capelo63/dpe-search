@@ -6,6 +6,7 @@ import { newSearchQuerySchema, cleanNoisyNumber, type SearchQuery } from '@/type
 import { MARSEILLE_CODES_POSTAUX } from '@/lib/marseille';
 import { addRecentQuery } from '@/lib/recent-queries';
 import { computeDpeLabels } from '@/lib/dpe-labels';
+import { AdoptionBanner } from '@/components/AdoptionBanner';
 
 const ETIQUETTES = ['A', 'B', 'C', 'D', 'E', 'F', 'G'] as const;
 
@@ -204,6 +205,8 @@ function SearchForm() {
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-12">
+      <AdoptionBanner />
+
       <p className="text-muted-foreground">
         Signature DPE d&apos;une annonce Marseille → shortlist d&apos;adresses candidates.
       </p>

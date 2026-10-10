@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { getSupabase } from '@/lib/supabase';
+import { getSupabaseServerClient, warnIfNotOwner } from '@/lib/supabase-server';
 import { searchQueryFromRow, candidateFromRow, type SearchQueryRow, type CandidateRow } from '@/lib/db';
 import { ShortlistView } from '@/components/ShortlistView';
 import { RecordRecentQuery } from '@/components/RecordRecentQuery';
@@ -8,9 +8,19 @@ import { RecordRecentQuery } from '@/components/RecordRecentQuery';
 // SSR : fetch direct Supabase (pas de polling/SSE, cf. POST /api/queries qui
 // a déjà tout persisté avant de renvoyer queryId). Le rendu interactif
 // (filtres, carte, tableau, statut) est délégué à ShortlistView (client).
+//
+// Checkpoint auth V1 : route protégée par middleware.ts (redirection /login
+// déjà faite si pas de session) ; client Supabase lié à la session
+// utilisateur (pas l'anon global lib/supabase.ts) pour rester compatible
+// avec les RLS user-aware du checkpoint suivant. Pas encore de filtrage par
+// user_id ici (cf. non-objectifs) — juste un log si la query consultée
+// n'appartient pas à l'utilisateur courant.
 export default async function ShortlistPage({ params }: { params: Promise<{ queryId: string }> }) {
   const { queryId } = await params;
-  const supabase = getSupabase();
+  const supabase = await getSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
   const { data: queryRow, error: queryError } = await supabase
     .from('dpe_search_query')
@@ -20,6 +30,10 @@ export default async function ShortlistPage({ params }: { params: Promise<{ quer
 
   if (queryError || !queryRow) {
     notFound();
+  }
+
+  if (user) {
+    warnIfNotOwner(user.id, (queryRow as SearchQueryRow).user_id, `GET /shortlist/${queryId}`);
   }
 
   const { data: candidateRows, error: candidatesError } = await supabase

@@ -14,6 +14,11 @@ export type CandidateStatus = 'a_verifier' | 'ecarte' | 'confirme' | 'visite';
 export type SearchQuery = {
   id: string;
   createdAt: string;
+  // Nullable transitoirement (checkpoint auth V1, supabase/migrations/
+  // 20260906_dpe_auth_v1.sql) : les queries créées avant l'auth restent
+  // orphelines jusqu'à adoption (cf. app/api/queries/adopt). Deviendra
+  // NOT NULL au checkpoint suivant (RLS strictes).
+  userId: string | null;
   codePostal: string;
   etiquetteDpe: Etiquette;
   // Nullable depuis V1.1 : l'émission GES (et donc l'étiquette GES qui en
